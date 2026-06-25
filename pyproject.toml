@@ -1,0 +1,14 @@
+[project]
+name = "bodybuddy-server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.138.0",
+    "uvicorn>=0.49.0",
+    "python-dotenv>=1.0.0",
+    "openai-agents>=0.4.2",
+    "slowapi>=0.1.9",
+    "PyJWT[crypto]>=2.8.0",
+]
