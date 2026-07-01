@@ -1,6 +1,39 @@
 import os
+from typing import List, Literal, Union
+from pydantic import BaseModel
 from openai import AsyncOpenAI
 from agents import Agent, OpenAIChatCompletionsModel, set_tracing_disabled
+
+
+class MealItem(BaseModel):
+    food_name: str
+    estimated_grams: float
+    calories_per_100: float
+    protein_per_100: float
+    carbs_per_100: float
+    fat_per_100: float
+
+
+class FoodAnalysis(BaseModel):
+    type: Literal["food"]
+    food_name: str
+    measurement_type: Literal["grams", "units"]
+    calories_per_100: float
+    protein_per_100: float
+    carbs_per_100: float
+    fat_per_100: float
+    serving_amount: float
+    unit_weight_g: float
+    category: str
+
+
+class MealAnalysis(BaseModel):
+    type: Literal["meal"]
+    meal_name: str
+    items: List[MealItem]
+
+
+NutritionResult = Union[FoodAnalysis, MealAnalysis]
 
 NUTRITION_INSTRUCTIONS = """
 You are a professional nutrition expert who analyzes food images.
@@ -15,38 +48,6 @@ Examples:
 - A bowl of oats → type "food"
 - Rice + chicken + salad → type "meal"
 - A protein bar → type "food"
-
-Return ONLY valid JSON — no markdown, no explanation, nothing else.
-
-For a single food type use this exact format:
-{
-  "type": "food",
-  "food_name": "...",
-  "measurement_type": "grams or units",
-  "calories_per_100": 0,
-  "protein_per_100": 0,
-  "carbs_per_100": 0,
-  "fat_per_100": 0,
-  "serving_amount": 0,
-  "unit_weight_g": 0,
-  "category": "..."
-}
-
-For a full meal use this exact format:
-{
-  "type": "meal",
-  "meal_name": "...",
-  "items": [
-    {
-      "food_name": "...",
-      "estimated_grams": 0,
-      "calories_per_100": 0,
-      "protein_per_100": 0,
-      "carbs_per_100": 0,
-      "fat_per_100": 0
-    }
-  ]
-}
 
 Rules:
 - food_name, meal_name, items[].food_name, and category MUST be in Hebrew
@@ -65,8 +66,8 @@ Rules:
   - When measurement_type is "units": number of individual items (e.g. 4 eggs → serving_amount: 4)
   - When measurement_type is "grams": estimated weight in grams (e.g. 200g of chicken → serving_amount: 200)
 - Use your best nutritional knowledge for all estimates
-- Return ONLY the JSON object, nothing else
 """
+
 
 def init_nutrition_agent():
     set_tracing_disabled(disabled=True)
@@ -81,4 +82,5 @@ def init_nutrition_agent():
             model="gemini-2.5-flash",
             openai_client=client,
         ),
+        output_type=NutritionResult,
     )
