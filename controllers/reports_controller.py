@@ -7,6 +7,7 @@ from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -30,6 +31,15 @@ def _sanitize(value: str | None, max_length: int = 200) -> str:
 
 def _escape(value: str | None, max_length: int = 200) -> str:
     return html.escape(_sanitize(value, max_length))
+
+
+def _safe_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    candidate = value.strip()
+    if urlparse(candidate).scheme not in ("http", "https"):
+        return None
+    return html.escape(candidate, quote=True)
 
 
 def _format_created_at(created_at: str | None) -> str:
@@ -89,7 +99,18 @@ def _build_email_html(
     report_id_display: str,
     full_name_display: str,
     email_display: str,
+    example_url_safe: str | None,
 ) -> str:
+    example_url_row = ""
+    if example_url_safe:
+        example_url_row = f"""\
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;">קישור לדוגמה</td>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};font-size:14px;text-align:right;">
+                    <a href="{example_url_safe}" style="color:{COLOR_LIME};text-decoration:none;font-weight:bold;">צפייה בדוגמה &#8592;</a>
+                  </td>
+                </tr>
+"""
     return f"""\
 <!DOCTYPE html>
 <html dir="rtl" lang="he">
@@ -129,6 +150,7 @@ def _build_email_html(
                   <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;">הערה</td>
                   <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_900};font-size:14px;text-align:right;">{safe_note}</td>
                 </tr>
+{example_url_row}\
                 <tr>
                   <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;">תאריך</td>
                   <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_900};font-size:14px;text-align:right;">{created_at_display}</td>
@@ -175,6 +197,7 @@ async def send_exercise_report_email(
     user_id: str,
     report_id: str | None = None,
     created_at: str | None = None,
+    example_url: str | None = None,
 ) -> None:
     gmail_address = os.getenv("GMAIL_ADDRESS")
     gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
@@ -189,9 +212,12 @@ async def send_exercise_report_email(
     created_at_display = _format_created_at(created_at)
     report_id_display = _escape(report_id, max_length=100)
 
-    full_name, email_address = await _fetch_user_details(user_id if user_id != "-" else None)
+    full_name, email_address = await _fetch_user_details(
+        user_id if user_id != "-" else None
+    )
     full_name_display = _escape(full_name)
     email_display = _escape(email_address)
+    example_url_safe = _safe_url(example_url)
 
     message = MIMEMultipart("related")
     message["Subject"] = f'דיווח על תרגיל חסר: "{_sanitize(search_query)}"'
@@ -206,6 +232,7 @@ async def send_exercise_report_email(
         report_id_display,
         full_name_display,
         email_display,
+        example_url_safe,
     )
     message.attach(MIMEText(html_body, "html", "utf-8"))
 
