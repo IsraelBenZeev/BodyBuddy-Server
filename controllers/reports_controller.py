@@ -3,6 +3,8 @@ import re
 import smtplib
 from email.mime.text import MIMEText
 
+import httpx
+
 CONTROL_CHARS = re.compile(r"[\r\n]")
 
 
@@ -44,3 +46,25 @@ async def send_exercise_report_email(
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(gmail_address, gmail_app_password)
         server.send_message(message)
+
+
+async def update_exercise_report_status(report_id: str, status: str) -> None:
+    supabase_url = os.getenv("SUPABASE_URL")
+    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not supabase_url or not service_role_key:
+        raise RuntimeError("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not configured")
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.patch(
+            f"{supabase_url}/rest/v1/exercise_reports",
+            params={"id": f"eq.{report_id}"},
+            headers={
+                "apikey": service_role_key,
+                "Authorization": f"Bearer {service_role_key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            json={"status": status},
+        )
+        response.raise_for_status()
