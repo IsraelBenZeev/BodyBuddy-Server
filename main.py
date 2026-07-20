@@ -10,6 +10,7 @@ load_dotenv(override=True)
 from routers.Nutrition_Router import routerNutrition
 from routers.Reports_Router import routerReports
 from routers.Uploads_Router import routerUploads
+from routers.Webhooks_Router import routerWebhooks
 from limiter import limiter
 
 app = FastAPI(title="BodyBuddy Server")
@@ -37,6 +38,7 @@ async def root():
 app.include_router(routerNutrition, prefix="/nutrition", tags=["nutrition"])
 app.include_router(routerReports, prefix="/reports", tags=["reports"])
 app.include_router(routerUploads, prefix="/uploads", tags=["uploads"])
+app.include_router(routerWebhooks, prefix="/webhooks", tags=["webhooks"])
 
 if __name__ == "__main__":
     if os.getenv("ENVIRONMENT") == "development":
