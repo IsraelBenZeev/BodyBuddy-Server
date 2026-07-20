@@ -15,6 +15,7 @@ class ExerciseReportRecord(BaseModel):
     search_query: str
     suggested_name: str | None = None
     note: str | None = None
+    created_at: str | None = None
 
 
 class SupabaseWebhookPayload(BaseModel):
@@ -43,7 +44,12 @@ async def exercise_report_webhook(
 
     try:
         await send_exercise_report_email(
-            record.search_query, record.suggested_name, record.note, record.user_id or "-"
+            record.search_query,
+            record.suggested_name,
+            record.note,
+            record.user_id or "-",
+            report_id=record.id,
+            created_at=record.created_at,
         )
     except Exception as e:
         print("exercise report webhook email error:", e)
