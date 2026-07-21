@@ -1,5 +1,7 @@
 import os
+import smtplib
 from datetime import date, datetime, timedelta
+from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -10,6 +12,8 @@ UTC_TZ = ZoneInfo("UTC")
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 EXPO_CHUNK_SIZE = 100
 MAX_ATTEMPTS = 5
+
+SCHEDULER_TEST_EMAIL_RECIPIENT = "i0548542122@gmail.com"
 
 DAY_LETTERS = ["א", "ב", "ג", "ד", "ה", "ו", "ש"]  # JS Date.getDay() order: 0=Sunday..6=Saturday
 
@@ -375,6 +379,27 @@ async def _check_weekly_summary(client: httpx.AsyncClient, now_il: datetime) -> 
     await _enqueue_for_users(client, eligible_user_ids, "weekly_summary", lambda _uid: dedup_key)
 
 
+def _send_scheduler_test_email() -> None:
+    gmail_address = os.getenv("GMAIL_ADDRESS")
+    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
+    if not gmail_address or not gmail_app_password:
+        print("scheduler test email skipped: GMAIL_ADDRESS/GMAIL_APP_PASSWORD not configured")
+        return
+
+    sent_at = _israel_now().strftime("%d/%m/%Y %H:%M:%S")
+    message = MIMEText(f"מייל בדיקה - ה-scheduler רץ בשעה {sent_at} (שעון ישראל)", "plain", "utf-8")
+    message["Subject"] = "מייל בדיקה - Scheduler"
+    message["From"] = gmail_address
+    message["To"] = SCHEDULER_TEST_EMAIL_RECIPIENT
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_address, gmail_app_password)
+            server.send_message(message)
+    except Exception as e:
+        print("scheduler test email error:", e)
+
+
 async def enqueue_eligible_notifications() -> None:
     now_il = _israel_now()
     async with httpx.AsyncClient(timeout=20.0) as client:
@@ -481,5 +506,6 @@ async def process_push_queue() -> dict:
 
 
 async def run_scheduler_cycle() -> dict:
+    _send_scheduler_test_email()
     await enqueue_eligible_notifications()
     return await process_push_queue()
