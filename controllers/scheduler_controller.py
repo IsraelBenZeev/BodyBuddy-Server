@@ -387,25 +387,25 @@ async def _check_weekly_summary(client: httpx.AsyncClient, now_il: datetime) -> 
     )
 
 
-def _send_scheduler_test_email() -> None:
-    gmail_address = os.getenv("GMAIL_ADDRESS")
-    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
-    if not gmail_address or not gmail_app_password:
-        print("scheduler test email skipped: GMAIL_ADDRESS/GMAIL_APP_PASSWORD not configured")
-        return
+# def _send_scheduler_test_email() -> None:
+#     gmail_address = os.getenv("GMAIL_ADDRESS")
+#     gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
+#     if not gmail_address or not gmail_app_password:
+#         print("scheduler test email skipped: GMAIL_ADDRESS/GMAIL_APP_PASSWORD not configured")
+#         return
 
-    sent_at = _israel_now().strftime("%d/%m/%Y %H:%M:%S")
-    message = MIMEText(f"מייל בדיקה - ה-scheduler רץ בשעה {sent_at} (שעון ישראל)", "plain", "utf-8")
-    message["Subject"] = "מייל בדיקה - Scheduler"
-    message["From"] = gmail_address
-    message["To"] = SCHEDULER_TEST_EMAIL_RECIPIENT
+#     sent_at = _israel_now().strftime("%d/%m/%Y %H:%M:%S")
+#     message = MIMEText(f"מייל בדיקה - ה-scheduler רץ בשעה {sent_at} (שעון ישראל)", "plain", "utf-8")
+#     message["Subject"] = "מייל בדיקה - Scheduler"
+#     message["From"] = gmail_address
+#     message["To"] = SCHEDULER_TEST_EMAIL_RECIPIENT
 
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(gmail_address, gmail_app_password)
-            server.send_message(message)
-    except Exception as e:
-        print("scheduler test email error:", e)
+#     try:
+#         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+#             server.login(gmail_address, gmail_app_password)
+#             server.send_message(message)
+#     except Exception as e:
+#         print("scheduler test email error:", e)
 
 
 async def enqueue_eligible_notifications() -> None:
@@ -514,6 +514,5 @@ async def process_push_queue() -> dict:
 
 
 async def run_scheduler_cycle() -> dict:
-    _send_scheduler_test_email()
     await enqueue_eligible_notifications()
     return await process_push_queue()
