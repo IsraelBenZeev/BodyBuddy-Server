@@ -13,4 +13,5 @@ dependencies = [
     "PyJWT[crypto]>=2.8.0",
     "httpx>=0.28.1",
     "python-multipart>=0.0.9",
+    "tzdata>=2024.1",
 ]

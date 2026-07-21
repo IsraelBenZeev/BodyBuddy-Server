@@ -9,6 +9,7 @@ load_dotenv(override=True)
 
 from routers.Nutrition_Router import routerNutrition
 from routers.Reports_Router import routerReports
+from routers.Scheduler_Router import routerScheduler
 from routers.Uploads_Router import routerUploads
 from routers.Webhooks_Router import routerWebhooks
 from limiter import limiter
@@ -37,6 +38,7 @@ async def root():
 
 app.include_router(routerNutrition, prefix="/nutrition", tags=["nutrition"])
 app.include_router(routerReports, prefix="/reports", tags=["reports"])
+app.include_router(routerScheduler, prefix="/scheduler", tags=["scheduler"])
 app.include_router(routerUploads, prefix="/uploads", tags=["uploads"])
 app.include_router(routerWebhooks, prefix="/webhooks", tags=["webhooks"])
 
