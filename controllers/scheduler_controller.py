@@ -162,17 +162,20 @@ async def _get_tokens_for_users(client: httpx.AsyncClient, user_ids: set[str]) -
     return result
 
 
-async def _enqueue_for_users(client, user_ids: set[str], notification_type: str, dedup_key_fn) -> None:
+async def _enqueue_for_users(
+    client, user_ids: set[str], notification_type: str, dedup_key_fn, message_fn=None
+) -> None:
     if not user_ids:
         return
     tokens_by_user = await _get_tokens_for_users(client, user_ids)
     if not tokens_by_user:
         return
 
-    message = MESSAGES[notification_type]
+    default_message = MESSAGES.get(notification_type)
     rows = []
     for user_id, tokens in tokens_by_user.items():
         dedup_key = dedup_key_fn(user_id)
+        message = message_fn(user_id) if message_fn else default_message
         for token in tokens:
             rows.append(
                 {
@@ -189,7 +192,7 @@ async def _enqueue_for_users(client, user_ids: set[str], notification_type: str,
 
 
 async def _check_workout_reminder(client: httpx.AsyncClient, now_il: datetime) -> None:
-    if now_il.hour not in (19, 20):
+    if now_il.hour != 20:
         return
 
     today = now_il.date()
@@ -241,7 +244,7 @@ async def _list_all_users(client: httpx.AsyncClient) -> list[dict]:
 
 
 async def _check_profile_incomplete(client: httpx.AsyncClient, now_il: datetime) -> None:
-    cutoff = now_il.astimezone(UTC_TZ) - timedelta(hours=3)
+    cutoff = now_il.astimezone(UTC_TZ) - timedelta(hours=24)
     all_users = await _list_all_users(client)
     candidates = [
         u
@@ -339,6 +342,9 @@ async def _check_weekly_summary(client: httpx.AsyncClient, now_il: datetime) -> 
     for plan in plans:
         user_id = plan["user_id"]
         required_days[user_id] = required_days.get(user_id, 0) + len(plan.get("days_per_week") or [])
+    required_days = {user_id: required for user_id, required in required_days.items() if required > 0}
+    if not required_days:
+        return
 
     sessions = await _rest_get(
         client,
@@ -354,29 +360,31 @@ async def _check_weekly_summary(client: httpx.AsyncClient, now_il: datetime) -> 
         started_il = datetime.fromisoformat(s["started_at"].replace("Z", "+00:00")).astimezone(IL_TZ).date()
         workout_days.setdefault(s["user_id"], set()).add(started_il.isoformat())
 
-    entries = await _rest_get(
-        client,
-        "nutrition_entries",
-        [
-            ("date", f"gte.{week_start.isoformat()}"),
-            ("date", f"lte.{today.isoformat()}"),
-            ("select", "user_id,date"),
-        ],
-    )
-    nutrition_days: dict[str, set[str]] = {}
-    for e in entries:
-        nutrition_days.setdefault(e["user_id"], set()).add(e["date"])
-
-    eligible_user_ids = set()
+    messages_by_user: dict[str, dict] = {}
     for user_id, required in required_days.items():
-        if required <= 0:
-            continue
-        if len(workout_days.get(user_id, set())) >= required and len(nutrition_days.get(user_id, set())) >= 7:
-            eligible_user_ids.add(user_id)
+        actual = len(workout_days.get(user_id, set()))
+        if actual >= required:
+            messages_by_user[user_id] = {
+                "title": "שבוע מושלם! 🏆",
+                "body": "עמדתם בכל היעדים השבוע - כל הכבוד!",
+                "data": {"screen": "home"},
+            }
+        else:
+            messages_by_user[user_id] = {
+                "title": "סיכום השבוע 💪",
+                "body": f"השלמת {actual} מתוך {required} אימונים השבוע - כל התחלה היא הישג, תמשיך ככה!",
+                "data": {"screen": "home"},
+            }
 
     year, week, _ = today.isocalendar()
     dedup_key = f"weekly_summary:{year}-W{week:02d}"
-    await _enqueue_for_users(client, eligible_user_ids, "weekly_summary", lambda _uid: dedup_key)
+    await _enqueue_for_users(
+        client,
+        set(messages_by_user.keys()),
+        "weekly_summary",
+        lambda _uid: dedup_key,
+        message_fn=lambda uid: messages_by_user[uid],
+    )
 
 
 def _send_scheduler_test_email() -> None:
