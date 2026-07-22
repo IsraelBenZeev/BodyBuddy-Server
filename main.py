@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+from routers.PrivacyPolicy_Router import routerPrivacyPolicy
 from routers.Nutrition_Router import routerNutrition
 from routers.Reports_Router import routerReports
 from routers.Scheduler_Router import routerScheduler
@@ -36,6 +37,7 @@ async def root():
     return {"message": "Welcome to BodyBuddy Server!", "version": "1.0"}
 
 
+app.include_router(routerPrivacyPolicy, prefix="/privacy-policy", tags=["privacy-policy"])
 app.include_router(routerNutrition, prefix="/nutrition", tags=["nutrition"])
 app.include_router(routerReports, prefix="/reports", tags=["reports"])
 app.include_router(routerScheduler, prefix="/scheduler", tags=["scheduler"])
