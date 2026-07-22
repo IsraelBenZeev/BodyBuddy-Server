@@ -19,7 +19,7 @@ async def get_privacy_policy() -> dict:
         response = await client.get(
             f"{supabase_url}/rest/v1/privacy_policies",
             params={
-                "select": "version,content_he,content_en",
+                "select": "version,content_he,content_en,created_at",
                 "order": "created_at.desc",
                 "limit": "1",
             },
