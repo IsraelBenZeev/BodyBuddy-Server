@@ -13,6 +13,7 @@ from routers.Reports_Router import routerReports
 from routers.Scheduler_Router import routerScheduler
 from routers.Uploads_Router import routerUploads
 from routers.Webhooks_Router import routerWebhooks
+from routers.Admin_Router import routerAdmin
 from limiter import limiter
 
 app = FastAPI(title="BodyBuddy Server")
@@ -43,6 +44,7 @@ app.include_router(routerReports, prefix="/reports", tags=["reports"])
 app.include_router(routerScheduler, prefix="/scheduler", tags=["scheduler"])
 app.include_router(routerUploads, prefix="/uploads", tags=["uploads"])
 app.include_router(routerWebhooks, prefix="/webhooks", tags=["webhooks"])
+app.include_router(routerAdmin, prefix="/admin", tags=["admin"])
 
 if __name__ == "__main__":
     if os.getenv("ENVIRONMENT") == "development":
