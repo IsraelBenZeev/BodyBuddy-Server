@@ -67,7 +67,7 @@ async def verify_supabase_token(authorization: str = Header(default=None)) -> st
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-async def require_admin(user_id: str = Depends(verify_supabase_token)) -> str:
+async def _fetch_is_admin(user_id: str) -> bool:
     supabase_url = os.getenv("SUPABASE_URL")
     service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
@@ -88,7 +88,11 @@ async def require_admin(user_id: str = Depends(verify_supabase_token)) -> str:
         response.raise_for_status()
         rows = response.json()
 
-    if not rows or not rows[0].get("is_admin"):
+    return bool(rows and rows[0].get("is_admin"))
+
+
+async def require_admin(user_id: str = Depends(verify_supabase_token)) -> str:
+    if not await _fetch_is_admin(user_id):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     return user_id
