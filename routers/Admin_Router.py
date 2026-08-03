@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends, Form, File, UploadFile
 
 from controllers.admin_controller import (
     delete_user,
@@ -9,6 +9,15 @@ from controllers.admin_controller import (
     get_user_detail,
     list_users,
     toggle_user_suspension,
+)
+from controllers.admin_exercises_controller import (
+    VALID_BODY_PARTS,
+    create_exercise,
+    delete_exercise,
+    get_exercise,
+    list_exercises,
+    toggle_exercise_freeze,
+    update_exercise,
 )
 from dependencies import _fetch_is_admin, require_admin, verify_supabase_token
 from limiter import limiter
@@ -20,6 +29,38 @@ NOT_ADMIN_MESSAGE = "החשבון שהתחברת איתו אינו מוגדר כ
 VALID_STATUSES = {"active", "suspended"}
 VALID_PLATFORMS = {"ios", "android"}
 VALID_AUTH_PROVIDERS = {"email", "google", "apple", "facebook"}
+
+MAX_EXERCISE_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_EXERCISE_VIDEO_SIZE = 100 * 1024 * 1024  # 100MB
+ALLOWED_EXERCISE_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
+ALLOWED_EXERCISE_VIDEO_CONTENT_TYPES = {"video/mp4", "video/quicktime", "video/webm"}
+
+
+def _validate_exercise_fields(name: str, body_parts: list[str]) -> None:
+    if not name.strip():
+        raise HTTPException(status_code=400, detail="name is required")
+    if not body_parts:
+        raise HTTPException(status_code=400, detail="bodyParts must contain at least one value")
+    if any(part not in VALID_BODY_PARTS for part in body_parts):
+        raise HTTPException(status_code=400, detail="Invalid bodyParts value")
+
+
+async def _read_validated_image(image: UploadFile) -> tuple[bytes, str]:
+    if image.content_type not in ALLOWED_EXERCISE_IMAGE_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid image type")
+    data = await image.read()
+    if len(data) > MAX_EXERCISE_IMAGE_SIZE:
+        raise HTTPException(status_code=400, detail="Image too large")
+    return data, image.content_type
+
+
+async def _read_validated_video(video: UploadFile) -> tuple[bytes, str]:
+    if video.content_type not in ALLOWED_EXERCISE_VIDEO_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid video type")
+    data = await video.read()
+    if len(data) > MAX_EXERCISE_VIDEO_SIZE:
+        raise HTTPException(status_code=400, detail="Video too large")
+    return data, video.content_type
 
 
 def _parse_query_date(value: str | None, field: str) -> date | None:
@@ -163,3 +204,145 @@ async def delete_user_route(request: Request, target_user_id: str, user_id: str 
     except Exception as e:
         print("admin delete user error:", e)
         raise HTTPException(status_code=500, detail="Failed to delete user")
+
+
+@routerAdmin.get("/exercises")
+@limiter.limit("60/minute")
+async def list_exercises_route(
+    request: Request,
+    page: int,
+    search: str = "",
+    bodyPart: str | None = None,
+    user_id: str = Depends(require_admin),
+):
+    if bodyPart is not None and bodyPart not in VALID_BODY_PARTS:
+        raise HTTPException(status_code=400, detail="Invalid bodyPart")
+
+    try:
+        return await list_exercises(search, page, body_part=bodyPart)
+    except RuntimeError as e:
+        print("admin list exercises config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load exercises")
+    except Exception as e:
+        print("admin list exercises error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load exercises")
+
+
+@routerAdmin.get("/exercises/{exercise_id}")
+@limiter.limit("60/minute")
+async def get_exercise_route(request: Request, exercise_id: str, user_id: str = Depends(require_admin)):
+    try:
+        return await get_exercise(exercise_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Exercise not found")
+    except RuntimeError as e:
+        print("admin get exercise config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load exercise")
+    except Exception as e:
+        print("admin get exercise error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load exercise")
+
+
+@routerAdmin.post("/exercises")
+@limiter.limit("20/minute")
+async def create_exercise_route(
+    request: Request,
+    name: str = Form(...),
+    bodyParts: list[str] = Form(...),
+    image: UploadFile = File(...),
+    video: UploadFile | None = File(None),
+    user_id: str = Depends(require_admin),
+):
+    _validate_exercise_fields(name, bodyParts)
+    image_data, image_content_type = await _read_validated_image(image)
+    video_data, video_content_type = (None, None)
+    if video is not None:
+        video_data, video_content_type = await _read_validated_video(video)
+
+    try:
+        return await create_exercise(
+            name=name,
+            body_parts=bodyParts,
+            image_data=image_data,
+            image_content_type=image_content_type,
+            video_data=video_data,
+            video_content_type=video_content_type,
+            admin_id=user_id,
+        )
+    except RuntimeError as e:
+        print("admin create exercise config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to create exercise")
+    except Exception as e:
+        print("admin create exercise error:", e)
+        raise HTTPException(status_code=500, detail="Failed to create exercise")
+
+
+@routerAdmin.put("/exercises/{exercise_id}")
+@limiter.limit("20/minute")
+async def update_exercise_route(
+    request: Request,
+    exercise_id: str,
+    name: str = Form(...),
+    bodyParts: list[str] = Form(...),
+    image: UploadFile | None = File(None),
+    video: UploadFile | None = File(None),
+    user_id: str = Depends(require_admin),
+):
+    _validate_exercise_fields(name, bodyParts)
+    image_data, image_content_type = (None, None)
+    if image is not None:
+        image_data, image_content_type = await _read_validated_image(image)
+    video_data, video_content_type = (None, None)
+    if video is not None:
+        video_data, video_content_type = await _read_validated_video(video)
+
+    try:
+        return await update_exercise(
+            exercise_id,
+            name=name,
+            body_parts=bodyParts,
+            image_data=image_data,
+            image_content_type=image_content_type,
+            video_data=video_data,
+            video_content_type=video_content_type,
+            admin_id=user_id,
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Exercise not found")
+    except RuntimeError as e:
+        print("admin update exercise config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to update exercise")
+    except Exception as e:
+        print("admin update exercise error:", e)
+        raise HTTPException(status_code=500, detail="Failed to update exercise")
+
+
+@routerAdmin.post("/exercises/{exercise_id}/freeze")
+@limiter.limit("20/minute")
+async def freeze_exercise_route(request: Request, exercise_id: str, user_id: str = Depends(require_admin)):
+    try:
+        return await toggle_exercise_freeze(exercise_id, user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Exercise not found")
+    except RuntimeError as e:
+        print("admin freeze exercise config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to update exercise")
+    except Exception as e:
+        print("admin freeze exercise error:", e)
+        raise HTTPException(status_code=500, detail="Failed to update exercise")
+
+
+@routerAdmin.delete("/exercises/{exercise_id}")
+@limiter.limit("20/minute")
+async def delete_exercise_route(request: Request, exercise_id: str, user_id: str = Depends(require_admin)):
+    try:
+        await delete_exercise(exercise_id, user_id)
+        return {"status": "deleted"}
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Exercise not found")
+    except RuntimeError as e:
+        print("admin delete exercise config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to delete exercise")
+    except Exception as e:
+        print("admin delete exercise error:", e)
+        raise HTTPException(status_code=500, detail="Failed to delete exercise")

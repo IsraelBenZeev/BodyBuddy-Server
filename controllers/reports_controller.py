@@ -2,7 +2,7 @@ import html
 import os
 import re
 import smtplib
-from datetime import datetime
+from datetime import datetime, timezone
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -10,6 +10,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+
+BODY_PART_LABELS_HE = {
+    "chest": "חזה",
+    "back": "גב",
+    "shoulders": "כתפיים",
+    "upper arms": "זרועות עליונות",
+    "upper legs": "רגליים עליונות",
+    "waist": "מותניים",
+}
 
 CONTROL_CHARS = re.compile(r"[\r\n]")
 
@@ -233,6 +242,171 @@ async def send_exercise_report_email(
         full_name_display,
         email_display,
         example_url_safe,
+    )
+    message.attach(MIMEText(html_body, "html", "utf-8"))
+
+    if LOGO_PATH.exists():
+        with open(LOGO_PATH, "rb") as logo_file:
+            logo_image = MIMEImage(logo_file.read())
+            logo_image.add_header("Content-ID", "<logo>")
+            logo_image.add_header("Content-Disposition", "inline", filename="logo.png")
+            message.attach(logo_image)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(gmail_address, gmail_app_password)
+        server.send_message(message)
+
+
+def _format_body_parts(body_parts: list[str]) -> str:
+    return ", ".join(BODY_PART_LABELS_HE.get(part, part) for part in body_parts) or "-"
+
+
+def _build_exercise_added_email_html(
+    exercise_name: str,
+    body_parts_display: str,
+    status_display: str,
+    image_url_safe: str | None,
+    video_url_safe: str | None,
+    created_at_display: str,
+    exercise_id_display: str,
+    admin_name_display: str,
+    admin_email_display: str,
+) -> str:
+    video_row = ""
+    if video_url_safe:
+        video_row = f"""\
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;">קישור לסרטון</td>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};font-size:14px;text-align:right;">
+                    <a href="{video_url_safe}" style="color:{COLOR_LIME};text-decoration:none;font-weight:bold;">צפייה בסרטון &#8592;</a>
+                  </td>
+                </tr>
+"""
+    image_row = ""
+    if image_url_safe:
+        image_row = f"""\
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;">קישור לתמונה</td>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};font-size:14px;text-align:right;">
+                    <a href="{image_url_safe}" style="color:{COLOR_LIME};text-decoration:none;font-weight:bold;">צפייה בתמונה &#8592;</a>
+                  </td>
+                </tr>
+"""
+    return f"""\
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<body style="margin:0;padding:24px;background:{COLOR_GRAY_50};font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="560" cellpadding="0" cellspacing="0"
+               style="max-width:560px;width:100%;background:#ffffff;border:1px solid {COLOR_GRAY_200};border-radius:12px;overflow:hidden;">
+          <tr>
+            <td align="center" style="background:{COLOR_GRAY_900};padding:28px 24px;">
+              <img src="cid:logo" alt="BodyBuddy" width="72" style="display:block;height:auto;" />
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px 24px 8px 24px;" dir="rtl">
+              <span style="display:inline-block;background:{COLOR_LIME_LIGHT};color:{COLOR_GRAY_900};font-size:12px;font-weight:bold;padding:4px 10px;border-radius:999px;">
+                תרגיל חדש
+              </span>
+              <h1 style="margin:12px 0 0 0;font-size:20px;color:{COLOR_GRAY_900};text-align:right;">
+                תרגיל חדש נוסף למאגר
+              </h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 24px 24px 24px;" dir="rtl">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;width:120px;">שם התרגיל</td>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_900};font-size:14px;text-align:right;">{exercise_name}</td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;">אזורי גוף</td>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_900};font-size:14px;text-align:right;">{body_parts_display}</td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;">סטטוס</td>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_900};font-size:14px;text-align:right;">{status_display}</td>
+                </tr>
+{image_row}\
+{video_row}\
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;">תאריך</td>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_900};font-size:14px;text-align:right;">{created_at_display}</td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 0;color:{COLOR_GRAY_500};font-size:13px;text-align:right;">מזהה תרגיל</td>
+                  <td style="padding:10px 0;color:{COLOR_GRAY_500};font-size:12px;font-family:monospace;text-align:right;">{exercise_id_display}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 24px 24px 24px;" dir="rtl">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+                     style="background:{COLOR_GRAY_50};border:1px solid {COLOR_GRAY_200};border-radius:8px;">
+                <tr>
+                  <td style="padding:14px 16px;">
+                    <div style="color:{COLOR_GRAY_500};font-size:12px;margin-bottom:4px;">נוסף על ידי</div>
+                    <div style="color:{COLOR_GRAY_900};font-size:14px;font-weight:bold;">{admin_name_display}</div>
+                    <div style="color:{COLOR_GRAY_500};font-size:13px;">{admin_email_display}</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:16px 24px;background:{COLOR_GRAY_50};border-top:1px solid {COLOR_GRAY_200};">
+              <span style="color:{COLOR_GRAY_500};font-size:12px;">נשלח אוטומטית ממערכת BodyBuddy</span>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+
+async def send_exercise_added_email(exercise: dict, admin_id: str) -> None:
+    gmail_address = os.getenv("GMAIL_ADDRESS")
+    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
+    recipient = os.getenv("REPORT_RECIPIENT_EMAIL", "bodybuddysupport@gmail.com")
+
+    if not gmail_address or not gmail_app_password:
+        raise RuntimeError("GMAIL_ADDRESS/GMAIL_APP_PASSWORD not configured")
+
+    exercise_name = _escape(exercise["name"])
+    body_parts_display = _escape(_format_body_parts(exercise.get("bodyParts") or []))
+    status_display = _escape("פעיל" if exercise.get("status") == "active" else "מוקפא")
+    image_url_safe = _safe_url(exercise.get("imageUrl"))
+    video_url_safe = _safe_url(exercise.get("videoUrl"))
+    created_at_display = _format_created_at(datetime.now(timezone.utc).isoformat())
+    exercise_id_display = _escape(exercise["id"], max_length=100)
+
+    admin_name, admin_email = await _fetch_user_details(admin_id)
+    admin_name_display = _escape(admin_name)
+    admin_email_display = _escape(admin_email)
+
+    message = MIMEMultipart("related")
+    message["Subject"] = f'תרגיל חדש נוסף: "{_sanitize(exercise["name"])}"'
+    message["From"] = gmail_address
+    message["To"] = recipient
+
+    html_body = _build_exercise_added_email_html(
+        exercise_name,
+        body_parts_display,
+        status_display,
+        image_url_safe,
+        video_url_safe,
+        created_at_display,
+        exercise_id_display,
+        admin_name_display,
+        admin_email_display,
     )
     message.attach(MIMEText(html_body, "html", "utf-8"))
 
