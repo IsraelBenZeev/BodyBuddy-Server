@@ -36,9 +36,14 @@ ALLOWED_EXERCISE_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp",
 ALLOWED_EXERCISE_VIDEO_CONTENT_TYPES = {"video/mp4", "video/quicktime", "video/webm"}
 
 
-def _validate_exercise_fields(name: str, body_parts: list[str]) -> None:
+EXERCISE_STATUSES = {"active", "frozen"}
+
+
+def _validate_exercise_fields(name: str, name_he: str, body_parts: list[str]) -> None:
     if not name.strip():
         raise HTTPException(status_code=400, detail="name is required")
+    if not name_he.strip():
+        raise HTTPException(status_code=400, detail="nameHe is required")
     if not body_parts:
         raise HTTPException(status_code=400, detail="bodyParts must contain at least one value")
     if any(part not in VALID_BODY_PARTS for part in body_parts):
@@ -52,6 +57,10 @@ async def _read_validated_image(image: UploadFile) -> tuple[bytes, str]:
     if len(data) > MAX_EXERCISE_IMAGE_SIZE:
         raise HTTPException(status_code=400, detail="Image too large")
     return data, image.content_type
+
+
+async def _read_validated_images(images: list[UploadFile]) -> list[tuple[bytes, str]]:
+    return [await _read_validated_image(image) for image in images]
 
 
 async def _read_validated_video(video: UploadFile) -> tuple[bytes, str]:
@@ -213,13 +222,16 @@ async def list_exercises_route(
     page: int,
     search: str = "",
     bodyPart: str | None = None,
+    status: str | None = None,
     user_id: str = Depends(require_admin),
 ):
     if bodyPart is not None and bodyPart not in VALID_BODY_PARTS:
         raise HTTPException(status_code=400, detail="Invalid bodyPart")
+    if status is not None and status not in EXERCISE_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid status")
 
     try:
-        return await list_exercises(search, page, body_part=bodyPart)
+        return await list_exercises(search, page, body_part=bodyPart, status=status)
     except RuntimeError as e:
         print("admin list exercises config error:", e)
         raise HTTPException(status_code=500, detail="Failed to load exercises")
@@ -248,13 +260,27 @@ async def get_exercise_route(request: Request, exercise_id: str, user_id: str = 
 async def create_exercise_route(
     request: Request,
     name: str = Form(...),
+    nameHe: str = Form(...),
     bodyParts: list[str] = Form(...),
-    image: UploadFile = File(...),
+    subBodyParts: list[str] = Form([]),
+    subBodyPartsHe: list[str] = Form([]),
+    targetMuscles: list[str] = Form([]),
+    targetMusclesHe: list[str] = Form([]),
+    secondaryMuscles: list[str] = Form([]),
+    secondaryMusclesHe: list[str] = Form([]),
+    equipments: list[str] = Form([]),
+    equipmentsHe: list[str] = Form([]),
+    instructions: list[str] = Form([]),
+    instructionsHe: list[str] = Form([]),
+    homeFriendly: bool = Form(False),
+    image: list[UploadFile] = File(...),
     video: UploadFile | None = File(None),
     user_id: str = Depends(require_admin),
 ):
-    _validate_exercise_fields(name, bodyParts)
-    image_data, image_content_type = await _read_validated_image(image)
+    _validate_exercise_fields(name, nameHe, bodyParts)
+    if not image:
+        raise HTTPException(status_code=400, detail="At least one image is required")
+    images = await _read_validated_images(image)
     video_data, video_content_type = (None, None)
     if video is not None:
         video_data, video_content_type = await _read_validated_video(video)
@@ -262,9 +288,20 @@ async def create_exercise_route(
     try:
         return await create_exercise(
             name=name,
+            name_he=nameHe,
             body_parts=bodyParts,
-            image_data=image_data,
-            image_content_type=image_content_type,
+            sub_body_parts=subBodyParts,
+            sub_body_parts_he=subBodyPartsHe,
+            target_muscles=targetMuscles,
+            target_muscles_he=targetMusclesHe,
+            secondary_muscles=secondaryMuscles,
+            secondary_muscles_he=secondaryMusclesHe,
+            equipments=equipments,
+            equipments_he=equipmentsHe,
+            instructions=instructions,
+            instructions_he=instructionsHe,
+            home_friendly=homeFriendly,
+            images=images,
             video_data=video_data,
             video_content_type=video_content_type,
             admin_id=user_id,
@@ -283,15 +320,29 @@ async def update_exercise_route(
     request: Request,
     exercise_id: str,
     name: str = Form(...),
+    nameHe: str = Form(...),
     bodyParts: list[str] = Form(...),
-    image: UploadFile | None = File(None),
+    subBodyParts: list[str] = Form([]),
+    subBodyPartsHe: list[str] = Form([]),
+    targetMuscles: list[str] = Form([]),
+    targetMusclesHe: list[str] = Form([]),
+    secondaryMuscles: list[str] = Form([]),
+    secondaryMusclesHe: list[str] = Form([]),
+    equipments: list[str] = Form([]),
+    equipmentsHe: list[str] = Form([]),
+    instructions: list[str] = Form([]),
+    instructionsHe: list[str] = Form([]),
+    homeFriendly: bool = Form(False),
+    imageUrls: list[str] = Form([]),
+    image: list[UploadFile] = File([]),
     video: UploadFile | None = File(None),
+    removeVideo: bool = Form(False),
     user_id: str = Depends(require_admin),
 ):
-    _validate_exercise_fields(name, bodyParts)
-    image_data, image_content_type = (None, None)
-    if image is not None:
-        image_data, image_content_type = await _read_validated_image(image)
+    _validate_exercise_fields(name, nameHe, bodyParts)
+    new_images = await _read_validated_images(image) if image else []
+    if not imageUrls and not new_images:
+        raise HTTPException(status_code=400, detail="At least one image is required")
     video_data, video_content_type = (None, None)
     if video is not None:
         video_data, video_content_type = await _read_validated_video(video)
@@ -300,11 +351,24 @@ async def update_exercise_route(
         return await update_exercise(
             exercise_id,
             name=name,
+            name_he=nameHe,
             body_parts=bodyParts,
-            image_data=image_data,
-            image_content_type=image_content_type,
+            sub_body_parts=subBodyParts,
+            sub_body_parts_he=subBodyPartsHe,
+            target_muscles=targetMuscles,
+            target_muscles_he=targetMusclesHe,
+            secondary_muscles=secondaryMuscles,
+            secondary_muscles_he=secondaryMusclesHe,
+            equipments=equipments,
+            equipments_he=equipmentsHe,
+            instructions=instructions,
+            instructions_he=instructionsHe,
+            home_friendly=homeFriendly,
+            keep_image_urls=imageUrls,
+            new_images=new_images,
             video_data=video_data,
             video_content_type=video_content_type,
+            remove_video=removeVideo,
             admin_id=user_id,
         )
     except LookupError:

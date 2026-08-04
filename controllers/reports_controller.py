@@ -383,7 +383,8 @@ async def send_exercise_added_email(exercise: dict, admin_id: str) -> None:
     exercise_name = _escape(exercise["name"])
     body_parts_display = _escape(_format_body_parts(exercise.get("bodyParts") or []))
     status_display = _escape("פעיל" if exercise.get("status") == "active" else "מוקפא")
-    image_url_safe = _safe_url(exercise.get("imageUrl"))
+    image_urls = exercise.get("imageUrls") or []
+    image_url_safe = _safe_url(image_urls[0] if image_urls else None)
     video_url_safe = _safe_url(exercise.get("videoUrl"))
     created_at_display = _format_created_at(datetime.now(timezone.utc).isoformat())
     exercise_id_display = _escape(exercise["id"], max_length=100)
