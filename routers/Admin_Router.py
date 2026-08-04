@@ -37,6 +37,8 @@ ALLOWED_EXERCISE_VIDEO_CONTENT_TYPES = {"video/mp4", "video/quicktime", "video/w
 
 
 EXERCISE_STATUSES = {"active", "frozen"}
+EXERCISE_SORT_FIELDS = {"createdAt", "name"}
+EXERCISE_SORT_ORDERS = {"asc", "desc"}
 
 
 def _validate_exercise_fields(name: str, name_he: str, body_parts: list[str]) -> None:
@@ -223,15 +225,21 @@ async def list_exercises_route(
     search: str = "",
     bodyPart: str | None = None,
     status: str | None = None,
+    sortBy: str = "createdAt",
+    sortOrder: str = "desc",
     user_id: str = Depends(require_admin),
 ):
     if bodyPart is not None and bodyPart not in VALID_BODY_PARTS:
         raise HTTPException(status_code=400, detail="Invalid bodyPart")
     if status is not None and status not in EXERCISE_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status")
+    if sortBy not in EXERCISE_SORT_FIELDS:
+        raise HTTPException(status_code=400, detail="Invalid sortBy")
+    if sortOrder not in EXERCISE_SORT_ORDERS:
+        raise HTTPException(status_code=400, detail="Invalid sortOrder")
 
     try:
-        return await list_exercises(search, page, body_part=bodyPart, status=status)
+        return await list_exercises(search, page, body_part=bodyPart, status=status, sort_by=sortBy, sort_order=sortOrder)
     except RuntimeError as e:
         print("admin list exercises config error:", e)
         raise HTTPException(status_code=500, detail="Failed to load exercises")

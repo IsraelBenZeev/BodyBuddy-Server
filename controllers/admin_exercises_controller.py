@@ -1,5 +1,6 @@
 import os
-import uuid
+import secrets
+import string
 
 import httpx
 
@@ -11,6 +12,13 @@ EXERCISES_TABLE = "exercises_v2"
 EXERCISES_PAGE_SIZE = 20
 VALID_BODY_PARTS = {"chest", "back", "shoulders", "upper arms", "upper legs", "waist"}
 VALID_STATUSES = {"active", "frozen"}
+VALID_SORT_FIELDS = {"createdAt": "created_at", "name": "name_he"}
+VALID_SORT_ORDERS = {"asc", "desc"}
+
+ADMIN_ID_PREFIX = "admin_"
+SHORT_ID_ALPHABET = string.ascii_letters + string.digits
+SHORT_ID_LENGTH = 7
+SHORT_ID_MAX_ATTEMPTS = 10
 
 BODY_PART_HE = {
     "chest": "חזה",
@@ -45,6 +53,7 @@ def _to_exercise(row: dict) -> dict:
         "status": row.get("status") or "active",
         "imageUrls": row.get("imageUrls") or [],
         "videoUrl": row.get("videoUrl"),
+        "createdAt": row.get("created_at"),
     }
 
 
@@ -55,21 +64,45 @@ def _parse_total(content_range: str | None) -> int:
     return int(total) if total.isdigit() else 0
 
 
+async def _generate_exercise_id(client: httpx.AsyncClient, supabase_url: str) -> str:
+    for _ in range(SHORT_ID_MAX_ATTEMPTS):
+        candidate = ADMIN_ID_PREFIX + "".join(secrets.choice(SHORT_ID_ALPHABET) for _ in range(SHORT_ID_LENGTH))
+        response = await client.get(
+            f"{supabase_url}/rest/v1/{EXERCISES_TABLE}",
+            params={"select": "exerciseId", "exerciseId": f"eq.{candidate}"},
+            headers=_supabase_headers(),
+        )
+        response.raise_for_status()
+        if not response.json():
+            return candidate
+    raise RuntimeError("Failed to generate a unique exercise id")
+
+
 async def list_exercises(
-    search: str, page: int, *, body_part: str | None = None, status: str | None = None
+    search: str,
+    page: int,
+    *,
+    body_part: str | None = None,
+    status: str | None = None,
+    sort_by: str = "createdAt",
+    sort_order: str = "desc",
 ) -> dict:
     supabase_url = os.getenv("SUPABASE_URL")
     headers = {**_supabase_headers(), "Prefer": "count=exact"}
 
+    sort_column = VALID_SORT_FIELDS.get(sort_by, "created_at")
+    sort_direction = sort_order if sort_order in VALID_SORT_ORDERS else "desc"
+
     params = {
         "select": EXERCISE_SELECT,
-        "order": "name.asc",
+        "order": f"{sort_column}.{sort_direction}",
         "limit": str(EXERCISES_PAGE_SIZE),
         "offset": str((page - 1) * EXERCISES_PAGE_SIZE),
     }
     query = search.strip()
     if query:
-        params["name"] = f"ilike.*{query}*"
+        escaped_query = query.replace('"', '""')
+        params["or"] = f'(name.ilike."*{escaped_query}*",name_he.ilike."*{escaped_query}*")'
     if body_part:
         params["bodyParts"] = f"cs.{{{body_part}}}"
     if status:
@@ -128,38 +161,40 @@ async def create_exercise(
     video_content_type: str | None,
     admin_id: str,
 ) -> dict:
-    exercise_id = f"admin_{uuid.uuid4().hex}"
-    image_urls = await upload_exercise_images(images, exercise_id)
-    video_url = None
-    if video_data is not None:
-        video_url = await upload_exercise_video(video_data, video_content_type, exercise_id)
-
     supabase_url = os.getenv("SUPABASE_URL")
-    headers = {**_supabase_headers(), "Content-Type": "application/json", "Prefer": "return=representation"}
-
-    payload = {
-        "exerciseId": exercise_id,
-        "name": name,
-        "name_he": name_he,
-        "bodyParts": body_parts,
-        "bodyParts_he": [BODY_PART_HE[part] for part in body_parts],
-        "subBodyParts": sub_body_parts,
-        "subBodyParts_he": sub_body_parts_he,
-        "targetMuscles": target_muscles,
-        "targetMuscles_he": target_muscles_he,
-        "secondaryMuscles": secondary_muscles,
-        "secondaryMuscles_he": secondary_muscles_he,
-        "equipments": equipments,
-        "equipments_he": equipments_he,
-        "instructions": instructions,
-        "instructions_he": instructions_he,
-        "homeFriendly": home_friendly,
-        "imageUrls": image_urls,
-        "videoUrl": video_url,
-        "status": "active",
-    }
 
     async with httpx.AsyncClient(timeout=10.0) as client:
+        exercise_id = await _generate_exercise_id(client, supabase_url)
+
+        image_urls = await upload_exercise_images(images, exercise_id)
+        video_url = None
+        if video_data is not None:
+            video_url = await upload_exercise_video(video_data, video_content_type, exercise_id)
+
+        headers = {**_supabase_headers(), "Content-Type": "application/json", "Prefer": "return=representation"}
+
+        payload = {
+            "exerciseId": exercise_id,
+            "name": name,
+            "name_he": name_he,
+            "bodyParts": body_parts,
+            "bodyParts_he": [BODY_PART_HE[part] for part in body_parts],
+            "subBodyParts": sub_body_parts,
+            "subBodyParts_he": sub_body_parts_he,
+            "targetMuscles": target_muscles,
+            "targetMuscles_he": target_muscles_he,
+            "secondaryMuscles": secondary_muscles,
+            "secondaryMuscles_he": secondary_muscles_he,
+            "equipments": equipments,
+            "equipments_he": equipments_he,
+            "instructions": instructions,
+            "instructions_he": instructions_he,
+            "homeFriendly": home_friendly,
+            "imageUrls": image_urls,
+            "videoUrl": video_url,
+            "status": "active",
+        }
+
         next_sort_order_response = await client.get(
             f"{supabase_url}/rest/v1/{EXERCISES_TABLE}",
             params={"select": "sort_order", "order": "sort_order.desc", "limit": "1"},
@@ -168,6 +203,7 @@ async def create_exercise(
         next_sort_order_response.raise_for_status()
         rows = next_sort_order_response.json()
         payload["sort_order"] = (rows[0]["sort_order"] + 1) if rows else 1
+        payload["idx"] = payload["sort_order"] - 1
 
         response = await client.post(f"{supabase_url}/rest/v1/{EXERCISES_TABLE}", headers=headers, json=payload)
         response.raise_for_status()
