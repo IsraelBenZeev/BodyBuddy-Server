@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Request, Depends, Form, File, UploadFile
+from fastapi import APIRouter, HTTPException, Request, Depends, Body, Form, File, UploadFile
 
 from controllers.admin_controller import (
     delete_user,
@@ -18,6 +18,14 @@ from controllers.admin_exercises_controller import (
     list_exercises,
     toggle_exercise_freeze,
     update_exercise,
+)
+from controllers.admin_notifications_controller import (
+    ACTIVITY_SEGMENTS,
+    PLATFORM_SEGMENTS,
+    VALID_SCREENS,
+    get_notification_history,
+    preview_audience,
+    send_notification,
 )
 from dependencies import _fetch_is_admin, require_admin, verify_supabase_token
 from limiter import limiter
@@ -418,3 +426,73 @@ async def delete_exercise_route(request: Request, exercise_id: str, user_id: str
     except Exception as e:
         print("admin delete exercise error:", e)
         raise HTTPException(status_code=500, detail="Failed to delete exercise")
+
+
+@routerAdmin.get("/notifications/audience-preview")
+@limiter.limit("60/minute")
+async def notifications_audience_preview_route(
+    request: Request,
+    activity: str = "any",
+    platform: str = "any",
+    user_id: str = Depends(require_admin),
+):
+    if activity not in ACTIVITY_SEGMENTS:
+        raise HTTPException(status_code=400, detail="Invalid activity")
+    if platform not in PLATFORM_SEGMENTS:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+
+    try:
+        return await preview_audience(activity, platform)
+    except RuntimeError as e:
+        print("admin notifications audience preview config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to compute audience")
+    except Exception as e:
+        print("admin notifications audience preview error:", e)
+        raise HTTPException(status_code=500, detail="Failed to compute audience")
+
+
+@routerAdmin.post("/notifications/send")
+@limiter.limit("10/minute")
+async def notifications_send_route(
+    request: Request,
+    title: str = Body(...),
+    body: str = Body(...),
+    screen: str | None = Body(None),
+    activity: str = Body("any"),
+    platform: str = Body("any"),
+    user_id: str = Depends(require_admin),
+):
+    if not title.strip():
+        raise HTTPException(status_code=400, detail="title is required")
+    if not body.strip():
+        raise HTTPException(status_code=400, detail="body is required")
+    if activity not in ACTIVITY_SEGMENTS:
+        raise HTTPException(status_code=400, detail="Invalid activity")
+    if platform not in PLATFORM_SEGMENTS:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+    if screen and screen not in VALID_SCREENS:
+        raise HTTPException(status_code=400, detail="Invalid screen")
+
+    try:
+        return await send_notification(
+            title.strip(), body.strip(), screen.strip() if screen else None, activity, platform, user_id
+        )
+    except RuntimeError as e:
+        print("admin notifications send config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to send notification")
+    except Exception as e:
+        print("admin notifications send error:", e)
+        raise HTTPException(status_code=500, detail="Failed to send notification")
+
+
+@routerAdmin.get("/notifications/history")
+@limiter.limit("60/minute")
+async def notifications_history_route(request: Request, user_id: str = Depends(require_admin)):
+    try:
+        return await get_notification_history()
+    except RuntimeError as e:
+        print("admin notifications history config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load notification history")
+    except Exception as e:
+        print("admin notifications history error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load notification history")
