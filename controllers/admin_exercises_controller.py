@@ -6,7 +6,12 @@ import httpx
 
 from controllers.admin_controller import _supabase_headers, log_admin_action
 from controllers.reports_controller import send_exercise_added_email
-from controllers.uploads_controller import upload_exercise_images, upload_exercise_video
+from controllers.uploads_controller import (
+    delete_cloudinary_asset,
+    delete_cloudinary_assets,
+    upload_exercise_images,
+    upload_exercise_video,
+)
 
 EXERCISES_TABLE = "exercises_v2"
 EXERCISES_PAGE_SIZE = 20
@@ -247,6 +252,8 @@ async def update_exercise(
     supabase_url = os.getenv("SUPABASE_URL")
     headers = {**_supabase_headers(), "Content-Type": "application/json", "Prefer": "return=representation"}
 
+    current = await get_exercise(exercise_id)
+
     payload: dict = {
         "name": name,
         "name_he": name_he,
@@ -266,12 +273,18 @@ async def update_exercise(
     }
 
     if keep_image_urls is not None or new_images:
+        keep_urls = keep_image_urls if keep_image_urls is not None else current["imageUrls"]
+        removed_urls = [url for url in current["imageUrls"] if url not in keep_urls]
+        await delete_cloudinary_assets(removed_urls)
+
         uploaded = await upload_exercise_images(new_images, exercise_id) if new_images else []
-        payload["imageUrls"] = (keep_image_urls or []) + uploaded
+        payload["imageUrls"] = keep_urls + uploaded
 
     if video_data is not None:
+        await delete_cloudinary_asset(current["videoUrl"])
         payload["videoUrl"] = await upload_exercise_video(video_data, video_content_type, exercise_id)
     elif remove_video:
+        await delete_cloudinary_asset(current["videoUrl"])
         payload["videoUrl"] = None
 
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -321,6 +334,10 @@ async def toggle_exercise_freeze(exercise_id: str, admin_id: str) -> dict:
 async def delete_exercise(exercise_id: str, admin_id: str) -> None:
     supabase_url = os.getenv("SUPABASE_URL")
     headers = {**_supabase_headers(), "Prefer": "return=representation"}
+
+    current = await get_exercise(exercise_id)
+    await delete_cloudinary_assets(current["imageUrls"])
+    await delete_cloudinary_asset(current["videoUrl"])
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.delete(
