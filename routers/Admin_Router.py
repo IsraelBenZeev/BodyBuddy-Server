@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Request, Depends, Body, Form, File, UploadFile
+from fastapi import APIRouter, HTTPException, Request, Depends, Body, Form, File, Query, UploadFile
 
 from controllers.admin_controller import (
     delete_user,
@@ -34,6 +34,7 @@ from controllers.admin_notifications_controller import (
     VALID_SCREENS,
     get_notification_history,
     preview_audience,
+    preview_specific_users_audience,
     send_notification,
 )
 from dependencies import _fetch_is_admin, require_admin, verify_supabase_token
@@ -443,15 +444,24 @@ async def notifications_audience_preview_route(
     request: Request,
     activity: str = "any",
     platform: str = "any",
+    targetMode: str = "segment",
+    userIds: list[str] = Query(default=[]),
     user_id: str = Depends(require_admin),
 ):
-    if activity not in ACTIVITY_SEGMENTS:
-        raise HTTPException(status_code=400, detail="Invalid activity")
-    if platform not in PLATFORM_SEGMENTS:
-        raise HTTPException(status_code=400, detail="Invalid platform")
+    if targetMode not in TARGET_MODES:
+        raise HTTPException(status_code=400, detail="Invalid targetMode")
 
     try:
+        if targetMode == "specific_users":
+            return await preview_specific_users_audience(userIds)
+
+        if activity not in ACTIVITY_SEGMENTS:
+            raise HTTPException(status_code=400, detail="Invalid activity")
+        if platform not in PLATFORM_SEGMENTS:
+            raise HTTPException(status_code=400, detail="Invalid platform")
         return await preview_audience(activity, platform)
+    except HTTPException:
+        raise
     except RuntimeError as e:
         print("admin notifications audience preview config error:", e)
         raise HTTPException(status_code=500, detail="Failed to compute audience")

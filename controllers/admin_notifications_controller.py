@@ -100,6 +100,37 @@ async def preview_audience(activity: str, platform: str) -> dict:
     return {"audienceSize": len(tokens)}
 
 
+async def preview_specific_users_audience(user_ids: list[str]) -> dict:
+    if not user_ids:
+        return {"audienceSize": 0, "users": []}
+
+    supabase_url = os.getenv("SUPABASE_URL")
+    headers = _supabase_headers()
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(
+            f"{supabase_url}/rest/v1/user_push_tokens",
+            params={"select": "user_id,platform", "user_id": f"in.({','.join(user_ids)})"},
+            headers=headers,
+        )
+        response.raise_for_status()
+        rows = response.json()
+
+    platforms_by_user: dict[str, list[str]] = {}
+    for row in rows:
+        platforms_by_user.setdefault(row["user_id"], []).append(row["platform"])
+
+    users = [
+        {
+            "userId": user_id,
+            "deviceCount": len(platforms_by_user.get(user_id, [])),
+            "platforms": sorted(set(platforms_by_user.get(user_id, []))),
+        }
+        for user_id in user_ids
+    ]
+    return {"audienceSize": len(rows), "users": users}
+
+
 async def send_notification(
     title: str,
     body: str,
