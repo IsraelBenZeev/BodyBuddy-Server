@@ -10,6 +10,7 @@ EXPO_CHUNK_SIZE = 100
 
 ACTIVITY_SEGMENTS = {"any", "active_7d", "active_30d", "inactive_30d"}
 PLATFORM_SEGMENTS = {"any", "ios", "android"}
+TARGET_MODES = {"segment", "specific_users"}
 
 # תואם 1:1 ל-SCREEN_ROUTES ב-BodyBuddy-Client/src/hooks/useNotificationNavigation.ts.
 # privacy-policy ו-workout_plan לא נתמכים בכוונה - ראה הערה שם.
@@ -100,14 +101,24 @@ async def preview_audience(activity: str, platform: str) -> dict:
 
 
 async def send_notification(
-    title: str, body: str, screen: str | None, activity: str, platform: str, admin_id: str
+    title: str,
+    body: str,
+    screen: str | None,
+    activity: str,
+    platform: str,
+    admin_id: str,
+    target_mode: str = "segment",
+    user_ids: list[str] | None = None,
 ) -> dict:
     supabase_url = os.getenv("SUPABASE_URL")
     headers = _supabase_headers()
     navigation = {"screen": screen} if screen else None
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        target_user_ids = await _resolve_target_user_ids(client, supabase_url, headers, activity, platform)
+        if target_mode == "specific_users":
+            target_user_ids = set(user_ids or [])
+        else:
+            target_user_ids = await _resolve_target_user_ids(client, supabase_url, headers, activity, platform)
         tokens = await _tokens_for_user_ids(client, supabase_url, headers, target_user_ids)
 
         status = "sent"
@@ -137,6 +148,8 @@ async def send_notification(
                 "platform_segment": platform,
                 "audience_size": len(tokens),
                 "status": status,
+                "target_type": target_mode,
+                "recipient_user_ids": list(target_user_ids) if target_mode == "specific_users" else None,
             },
         )
         broadcast_response.raise_for_status()
@@ -146,7 +159,15 @@ async def send_notification(
         admin_id,
         "send_notification",
         screen or "no-navigation",
-        {"title": title, "body": body, "audienceSize": len(tokens), "activity": activity, "platform": platform},
+        {
+            "title": title,
+            "body": body,
+            "audienceSize": len(tokens),
+            "targetMode": target_mode,
+            "activity": activity if target_mode == "segment" else None,
+            "platform": platform if target_mode == "segment" else None,
+            "recipientCount": len(target_user_ids) if target_mode == "specific_users" else None,
+        },
     )
 
     return {
@@ -174,15 +195,30 @@ async def get_notification_history() -> list[dict]:
         broadcasts = broadcasts_response.json()
 
         admin_ids = {row["admin_id"] for row in broadcasts if row.get("admin_id")}
-        admins_by_id: dict[str, dict] = {}
-        if admin_ids:
+        recipient_ids: set[str] = set()
+        for row in broadcasts:
+            recipient_ids.update(row.get("recipient_user_ids") or [])
+
+        profiles_by_id: dict[str, dict] = {}
+        lookup_ids = admin_ids | recipient_ids
+        if lookup_ids:
             profiles_response = await client.get(
                 f"{supabase_url}/rest/v1/profiles",
-                params={"select": "user_id,full_name", "user_id": f"in.({','.join(admin_ids)})"},
+                params={"select": "user_id,full_name", "user_id": f"in.({','.join(lookup_ids)})"},
                 headers=headers,
             )
             profiles_response.raise_for_status()
-            admins_by_id = {row["user_id"]: row for row in profiles_response.json()}
+            profiles_by_id = {row["user_id"]: row for row in profiles_response.json()}
+
+        emails_by_id: dict[str, str] = {}
+        if recipient_ids:
+            auth_users = await _list_all_auth_users(client, supabase_url, headers)
+            emails_by_id = {user["id"]: user.get("email") for user in auth_users if user["id"] in recipient_ids}
+
+    def _recipient(user_id: str) -> dict:
+        name = (profiles_by_id.get(user_id) or {}).get("full_name")
+        email = emails_by_id.get(user_id)
+        return {"id": user_id, "name": name or email or "משתמש לא ידוע", "email": email}
 
     return [
         {
@@ -197,8 +233,10 @@ async def get_notification_history() -> list[dict]:
             },
             "audienceSize": row.get("audience_size") or 0,
             "status": row.get("status") or "sent",
-            "sentByName": (admins_by_id.get(row.get("admin_id")) or {}).get("full_name"),
+            "sentByName": (profiles_by_id.get(row.get("admin_id")) or {}).get("full_name"),
             "sentVia": row.get("sent_via") or "admin_panel",
+            "targetType": row.get("target_type") or "segment",
+            "recipients": [_recipient(user_id) for user_id in (row.get("recipient_user_ids") or [])],
         }
         for row in broadcasts
     ]

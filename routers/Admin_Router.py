@@ -19,9 +19,18 @@ from controllers.admin_exercises_controller import (
     toggle_exercise_freeze,
     update_exercise,
 )
+from controllers.admin_legal_documents_controller import (
+    DOCUMENT_TYPES,
+    DuplicateVersionError,
+    StaleVersionError,
+    create_legal_document_version,
+    get_legal_document,
+    list_legal_document_history,
+)
 from controllers.admin_notifications_controller import (
     ACTIVITY_SEGMENTS,
     PLATFORM_SEGMENTS,
+    TARGET_MODES,
     VALID_SCREENS,
     get_notification_history,
     preview_audience,
@@ -460,22 +469,38 @@ async def notifications_send_route(
     screen: str | None = Body(None),
     activity: str = Body("any"),
     platform: str = Body("any"),
+    targetMode: str = Body("segment"),
+    userIds: list[str] | None = Body(None),
     user_id: str = Depends(require_admin),
 ):
     if not title.strip():
         raise HTTPException(status_code=400, detail="title is required")
     if not body.strip():
         raise HTTPException(status_code=400, detail="body is required")
-    if activity not in ACTIVITY_SEGMENTS:
-        raise HTTPException(status_code=400, detail="Invalid activity")
-    if platform not in PLATFORM_SEGMENTS:
-        raise HTTPException(status_code=400, detail="Invalid platform")
+    if targetMode not in TARGET_MODES:
+        raise HTTPException(status_code=400, detail="Invalid targetMode")
     if screen and screen not in VALID_SCREENS:
         raise HTTPException(status_code=400, detail="Invalid screen")
 
+    if targetMode == "specific_users":
+        if not userIds:
+            raise HTTPException(status_code=400, detail="userIds is required for specific_users targetMode")
+    else:
+        if activity not in ACTIVITY_SEGMENTS:
+            raise HTTPException(status_code=400, detail="Invalid activity")
+        if platform not in PLATFORM_SEGMENTS:
+            raise HTTPException(status_code=400, detail="Invalid platform")
+
     try:
         return await send_notification(
-            title.strip(), body.strip(), screen.strip() if screen else None, activity, platform, user_id
+            title.strip(),
+            body.strip(),
+            screen.strip() if screen else None,
+            activity,
+            platform,
+            user_id,
+            target_mode=targetMode,
+            user_ids=userIds,
         )
     except RuntimeError as e:
         print("admin notifications send config error:", e)
@@ -496,3 +521,73 @@ async def notifications_history_route(request: Request, user_id: str = Depends(r
     except Exception as e:
         print("admin notifications history error:", e)
         raise HTTPException(status_code=500, detail="Failed to load notification history")
+
+
+@routerAdmin.get("/legal-documents/{document_type}")
+@limiter.limit("60/minute")
+async def get_legal_document_route(request: Request, document_type: str, user_id: str = Depends(require_admin)):
+    if document_type not in DOCUMENT_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid document type")
+    try:
+        return await get_legal_document(document_type)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Document not found")
+    except RuntimeError as e:
+        print("admin get legal document config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load document")
+    except Exception as e:
+        print("admin get legal document error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load document")
+
+
+@routerAdmin.get("/legal-documents/{document_type}/history")
+@limiter.limit("60/minute")
+async def get_legal_document_history_route(
+    request: Request, document_type: str, user_id: str = Depends(require_admin)
+):
+    if document_type not in DOCUMENT_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid document type")
+    try:
+        return await list_legal_document_history(document_type)
+    except RuntimeError as e:
+        print("admin legal document history config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load document history")
+    except Exception as e:
+        print("admin legal document history error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load document history")
+
+
+@routerAdmin.post("/legal-documents")
+@limiter.limit("20/minute")
+async def create_legal_document_route(
+    request: Request,
+    documentType: str = Body(...),
+    version: str = Body(...),
+    sections: list[dict] = Body(...),
+    changesSummaryHe: list[str] = Body([]),
+    changesSummaryEn: list[str] = Body([]),
+    expectedCreatedAt: str | None = Body(None),
+    user_id: str = Depends(require_admin),
+):
+    try:
+        return await create_legal_document_version(
+            documentType,
+            version,
+            sections,
+            changesSummaryHe,
+            changesSummaryEn,
+            expectedCreatedAt,
+            user_id,
+        )
+    except StaleVersionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except DuplicateVersionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        print("admin create legal document config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to publish document")
+    except Exception as e:
+        print("admin create legal document error:", e)
+        raise HTTPException(status_code=500, detail="Failed to publish document")
