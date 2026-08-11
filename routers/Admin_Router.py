@@ -33,11 +33,15 @@ from controllers.admin_notifications_controller import (
     PLATFORM_SEGMENTS,
     TARGET_MODES,
     VALID_SCREENS,
+    get_automations,
+    get_broadcast_recipients,
     get_notification_history,
     preview_audience,
     preview_specific_users_audience,
     send_notification,
+    update_automation,
 )
+from controllers.scheduler_controller import AUTOMATION_TYPES
 from dependencies import _fetch_is_admin, require_admin, verify_supabase_token
 from limiter import limiter
 
@@ -545,6 +549,96 @@ async def notifications_history_route(request: Request, user_id: str = Depends(r
     except Exception as e:
         print("admin notifications history error:", e)
         raise HTTPException(status_code=500, detail="Failed to load notification history")
+
+
+@routerAdmin.get("/notifications/recipients")
+@limiter.limit("60/minute")
+async def notifications_recipients_route(
+    request: Request, dedupKey: str, user_id: str = Depends(require_admin)
+):
+    try:
+        return await get_broadcast_recipients(dedupKey)
+    except RuntimeError as e:
+        print("admin notifications recipients config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load recipients")
+    except Exception as e:
+        print("admin notifications recipients error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load recipients")
+
+
+@routerAdmin.get("/notifications/automations")
+@limiter.limit("60/minute")
+async def notifications_automations_route(request: Request, user_id: str = Depends(require_admin)):
+    try:
+        return await get_automations()
+    except RuntimeError as e:
+        print("admin notifications automations config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load automations")
+    except Exception as e:
+        print("admin notifications automations error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load automations")
+
+
+@routerAdmin.patch("/notifications/automations/{automation_type}")
+@limiter.limit("30/minute")
+async def update_notification_automation_route(
+    request: Request,
+    automation_type: str,
+    enabled: bool | None = Body(None),
+    title: str | None = Body(None),
+    body: str | None = Body(None),
+    titleSuccess: str | None = Body(None),
+    bodySuccess: str | None = Body(None),
+    titleFail: str | None = Body(None),
+    bodyFail: str | None = Body(None),
+    screen: str | None = Body(None),
+    hour: int | None = Body(None),
+    dayOfWeek: int | None = Body(None),
+    thresholdPercent: int | None = Body(None),
+    firstReminderDelayHours: int | None = Body(None),
+    reminderIntervalHours: int | None = Body(None),
+    user_id: str = Depends(require_admin),
+):
+    if automation_type not in AUTOMATION_TYPES:
+        raise HTTPException(status_code=404, detail="Unknown automation type")
+    if screen and screen not in VALID_SCREENS:
+        raise HTTPException(status_code=400, detail="Invalid screen")
+    if hour is not None and not (0 <= hour <= 23):
+        raise HTTPException(status_code=400, detail="hour must be between 0 and 23")
+    if dayOfWeek is not None and not (0 <= dayOfWeek <= 6):
+        raise HTTPException(status_code=400, detail="dayOfWeek must be between 0 and 6")
+    if thresholdPercent is not None and not (1 <= thresholdPercent <= 99):
+        raise HTTPException(status_code=400, detail="thresholdPercent must be between 1 and 99")
+    if firstReminderDelayHours is not None and firstReminderDelayHours <= 0:
+        raise HTTPException(status_code=400, detail="firstReminderDelayHours must be positive")
+    if reminderIntervalHours is not None and reminderIntervalHours <= 0:
+        raise HTTPException(status_code=400, detail="reminderIntervalHours must be positive")
+
+    updates = {
+        "enabled": enabled,
+        "title": title.strip() if title else title,
+        "body": body.strip() if body else body,
+        "titleSuccess": titleSuccess.strip() if titleSuccess else titleSuccess,
+        "bodySuccess": bodySuccess.strip() if bodySuccess else bodySuccess,
+        "titleFail": titleFail.strip() if titleFail else titleFail,
+        "bodyFail": bodyFail.strip() if bodyFail else bodyFail,
+        "screen": screen,
+        "hour": hour,
+        "dayOfWeek": dayOfWeek,
+        "thresholdPercent": thresholdPercent,
+        "firstReminderDelayHours": firstReminderDelayHours,
+        "reminderIntervalHours": reminderIntervalHours,
+    }
+    updates = {key: value for key, value in updates.items() if value is not None}
+
+    try:
+        return await update_automation(automation_type, updates, user_id)
+    except RuntimeError as e:
+        print("admin notifications automation update config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to update automation")
+    except Exception as e:
+        print("admin notifications automation update error:", e)
+        raise HTTPException(status_code=500, detail="Failed to update automation")
 
 
 @routerAdmin.get("/legal-documents/{document_type}")

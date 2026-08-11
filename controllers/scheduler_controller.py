@@ -39,8 +39,8 @@ MESSAGES = {
         "data": None,
     },
     "nutrition_reminder": {
-        "title": "אל תשכחו לתעד 🍽️",
-        "body": "עדיין לא תיעדתם מספיק היום - כמה דקות ואתם מעודכנים",
+        "title": "עוד לא תיעדתם היום 🍽️",
+        "body": "לא הוכנסו ארוחות ליומן שלכם היום - כל תיעוד מקרב אתכם ליעד",
         "data": {"screen": "nutrition"},
     },
     "weekly_summary": {
@@ -48,6 +48,23 @@ MESSAGES = {
         "body": "עמדתם בכל היעדים השבוע - כל הכבוד!",
         "data": {"screen": "home"},
     },
+}
+
+WEEKLY_SUMMARY_DEFAULTS = {
+    "titleSuccess": "שבוע מושלם! 🏆",
+    "bodySuccess": "עמדתם בכל היעדים השבוע - כל הכבוד!",
+    "titleFail": "סיכום השבוע 💪",
+    "bodyFail": "השלמת {actual} מתוך {required} אימונים השבוע - כל התחלה היא הישג, תמשיך ככה!",
+    "screen": "home",
+}
+
+AUTOMATION_TYPES = {"workout_reminder", "profile_incomplete", "nutrition_reminder", "weekly_summary"}
+
+AUTOMATION_TRIGGER_DEFAULTS = {
+    "workout_reminder": {"hour": 20},
+    "profile_incomplete": {"firstReminderDelayHours": 24, "reminderIntervalHours": 24},
+    "nutrition_reminder": {"hour": 20, "thresholdPercent": 50},
+    "weekly_summary": {"dayOfWeek": 5, "hour": 12},
 }
 
 
@@ -148,6 +165,26 @@ def calculate_daily_calories(profile: dict, today: date) -> float | None:
     return tdee + GOAL_DIRECTION.get(goal, 0) * offset
 
 
+async def _fetch_automations(client: httpx.AsyncClient) -> dict[str, dict]:
+    rows = await _rest_get(client, "notification_automations", {"select": "*"})
+    return {row["type"]: row for row in rows}
+
+
+def _param(automation: dict, key: str, default):
+    value = automation.get(key)
+    return default if value is None else value
+
+
+def _resolved_message(automation: dict, notification_type: str) -> dict:
+    default = MESSAGES[notification_type]
+    screen = automation.get("screen")
+    return {
+        "title": automation.get("title") or default["title"],
+        "body": automation.get("body") or default["body"],
+        "data": {"screen": screen} if screen else default["data"],
+    }
+
+
 async def _get_tokens_for_users(client: httpx.AsyncClient, user_ids: set[str]) -> dict[str, list[str]]:
     if not user_ids:
         return {}
@@ -191,8 +228,10 @@ async def _enqueue_for_users(
     await _rest_insert_ignore_conflicts(client, "push_queue", rows, on_conflict="expo_push_token,dedup_key")
 
 
-async def _check_workout_reminder(client: httpx.AsyncClient, now_il: datetime) -> None:
-    if now_il.hour != 20:
+async def _check_workout_reminder(client: httpx.AsyncClient, now_il: datetime, automation: dict) -> None:
+    if not automation.get("enabled", True):
+        return
+    if now_il.hour != _param(automation, "hour", 20):
         return
 
     today = now_il.date()
@@ -220,7 +259,10 @@ async def _check_workout_reminder(client: httpx.AsyncClient, now_il: datetime) -
     eligible_user_ids = {p["user_id"] for p in plans if p["id"] not in plans_with_session_today}
 
     dedup_key = f"workout_reminder:{today.isoformat()}"
-    await _enqueue_for_users(client, eligible_user_ids, "workout_reminder", lambda _uid: dedup_key)
+    message = _resolved_message(automation, "workout_reminder")
+    await _enqueue_for_users(
+        client, eligible_user_ids, "workout_reminder", lambda _uid: dedup_key, message_fn=lambda _uid: message
+    )
 
 
 async def _list_all_users(client: httpx.AsyncClient) -> list[dict]:
@@ -243,8 +285,13 @@ async def _list_all_users(client: httpx.AsyncClient) -> list[dict]:
     return users
 
 
-async def _check_profile_incomplete(client: httpx.AsyncClient, now_il: datetime) -> None:
-    cutoff = now_il.astimezone(UTC_TZ) - timedelta(hours=24)
+async def _check_profile_incomplete(client: httpx.AsyncClient, now_il: datetime, automation: dict) -> None:
+    if not automation.get("enabled", True):
+        return
+    first_delay_hours = _param(automation, "first_reminder_delay_hours", 24)
+    interval_hours = _param(automation, "reminder_interval_hours", 24)
+
+    cutoff = now_il.astimezone(UTC_TZ) - timedelta(hours=first_delay_hours)
     all_users = await _list_all_users(client)
     candidates = [
         u
@@ -285,20 +332,28 @@ async def _check_profile_incomplete(client: httpx.AsyncClient, now_il: datetime)
         sent_times = history_by_user.get(user_id, [])
         if len(sent_times) == 0:
             eligible_dedup[user_id] = "profile_incomplete:1"
-        elif len(sent_times) == 1 and (now_utc - sent_times[0]) > timedelta(hours=24):
+        elif len(sent_times) == 1 and (now_utc - sent_times[0]) > timedelta(hours=interval_hours):
             eligible_dedup[user_id] = "profile_incomplete:2"
 
     if not eligible_dedup:
         return
 
+    message = _resolved_message(automation, "profile_incomplete")
     await _enqueue_for_users(
-        client, set(eligible_dedup.keys()), "profile_incomplete", lambda uid: eligible_dedup[uid]
+        client,
+        set(eligible_dedup.keys()),
+        "profile_incomplete",
+        lambda uid: eligible_dedup[uid],
+        message_fn=lambda _uid: message,
     )
 
 
-async def _check_nutrition_reminder(client: httpx.AsyncClient, now_il: datetime) -> None:
-    if now_il.hour != 20:
+async def _check_nutrition_reminder(client: httpx.AsyncClient, now_il: datetime, automation: dict) -> None:
+    if not automation.get("enabled", True):
         return
+    if now_il.hour != _param(automation, "hour", 20):
+        return
+    threshold_percent = _param(automation, "threshold_percent", 50)
 
     today = now_il.date()
     profiles = await _rest_get(
@@ -321,17 +376,24 @@ async def _check_nutrition_reminder(client: httpx.AsyncClient, now_il: datetime)
         daily_calories = calculate_daily_calories(profile, today)
         if daily_calories is None:
             continue
-        if consumed.get(user_id, 0) < daily_calories * 0.5:
+        if consumed.get(user_id, 0) < daily_calories * (threshold_percent / 100):
             eligible_user_ids.add(user_id)
 
     dedup_key = f"nutrition_reminder:{today.isoformat()}"
-    await _enqueue_for_users(client, eligible_user_ids, "nutrition_reminder", lambda _uid: dedup_key)
+    message = _resolved_message(automation, "nutrition_reminder")
+    await _enqueue_for_users(
+        client, eligible_user_ids, "nutrition_reminder", lambda _uid: dedup_key, message_fn=lambda _uid: message
+    )
 
 
-async def _check_weekly_summary(client: httpx.AsyncClient, now_il: datetime) -> None:
-    today = now_il.date()
-    if _day_letter(today) != "ו" or now_il.hour != 12:
+async def _check_weekly_summary(client: httpx.AsyncClient, now_il: datetime, automation: dict) -> None:
+    if not automation.get("enabled", True):
         return
+    today = now_il.date()
+    js_day_today = (today.weekday() + 1) % 7
+    if js_day_today != _param(automation, "day_of_week", 5) or now_il.hour != _param(automation, "hour", 12):
+        return
+    screen = automation.get("screen") or WEEKLY_SUMMARY_DEFAULTS["screen"]
 
     week_start = today - timedelta(days=6)
     week_start_utc, _ = _day_bounds_utc(week_start)
@@ -360,20 +422,25 @@ async def _check_weekly_summary(client: httpx.AsyncClient, now_il: datetime) -> 
         started_il = datetime.fromisoformat(s["started_at"].replace("Z", "+00:00")).astimezone(IL_TZ).date()
         workout_days.setdefault(s["user_id"], set()).add(started_il.isoformat())
 
+    title_success = automation.get("title_success") or WEEKLY_SUMMARY_DEFAULTS["titleSuccess"]
+    body_success = automation.get("body_success") or WEEKLY_SUMMARY_DEFAULTS["bodySuccess"]
+    title_fail = automation.get("title_fail") or WEEKLY_SUMMARY_DEFAULTS["titleFail"]
+    body_fail_template = automation.get("body_fail") or WEEKLY_SUMMARY_DEFAULTS["bodyFail"]
+
     messages_by_user: dict[str, dict] = {}
     for user_id, required in required_days.items():
         actual = len(workout_days.get(user_id, set()))
         if actual >= required:
             messages_by_user[user_id] = {
-                "title": "שבוע מושלם! 🏆",
-                "body": "עמדתם בכל היעדים השבוע - כל הכבוד!",
-                "data": {"screen": "home"},
+                "title": title_success,
+                "body": body_success,
+                "data": {"screen": screen},
             }
         else:
             messages_by_user[user_id] = {
-                "title": "סיכום השבוע 💪",
-                "body": f"השלמת {actual} מתוך {required} אימונים השבוע - כל התחלה היא הישג, תמשיך ככה!",
-                "data": {"screen": "home"},
+                "title": title_fail,
+                "body": body_fail_template.format(actual=actual, required=required),
+                "data": {"screen": screen},
             }
 
     year, week, _ = today.isocalendar()
@@ -411,10 +478,11 @@ async def _check_weekly_summary(client: httpx.AsyncClient, now_il: datetime) -> 
 async def enqueue_eligible_notifications() -> None:
     now_il = _israel_now()
     async with httpx.AsyncClient(timeout=20.0) as client:
-        await _check_workout_reminder(client, now_il)
-        await _check_profile_incomplete(client, now_il)
-        await _check_nutrition_reminder(client, now_il)
-        await _check_weekly_summary(client, now_il)
+        automations = await _fetch_automations(client)
+        await _check_workout_reminder(client, now_il, automations.get("workout_reminder", {}))
+        await _check_profile_incomplete(client, now_il, automations.get("profile_incomplete", {}))
+        await _check_nutrition_reminder(client, now_il, automations.get("nutrition_reminder", {}))
+        await _check_weekly_summary(client, now_il, automations.get("weekly_summary", {}))
 
 
 async def _fetch_pending_queue(client: httpx.AsyncClient) -> list[dict]:
@@ -423,7 +491,7 @@ async def _fetch_pending_queue(client: httpx.AsyncClient) -> list[dict]:
         "push_queue",
         [
             ("or", f"(status.eq.pending,and(status.eq.failed_retryable,attempts.lt.{MAX_ATTEMPTS}))"),
-            ("select", "id,expo_push_token,title,body,data,attempts"),
+            ("select", "id,expo_push_token,title,body,data,attempts,notification_type,dedup_key"),
             ("order", "created_at.asc"),
             ("limit", "1000"),
         ],
@@ -449,6 +517,47 @@ async def _send_expo_chunk(client: httpx.AsyncClient, rows: list[dict]) -> list[
     return response.json().get("data", [])
 
 
+async def _sync_scheduled_broadcasts(client: httpx.AsyncClient, touched_keys: set[tuple[str, str]]) -> None:
+    for notification_type, dedup_key in touched_keys:
+        rows = await _rest_get(
+            client, "push_queue", {"dedup_key": f"eq.{dedup_key}", "select": "status,title,body,data"}
+        )
+        sent_rows = [r for r in rows if r["status"] == "sent"]
+        if not sent_rows:
+            continue
+
+        if notification_type == "weekly_summary":
+            variant_counts: dict[str, int] = {}
+            for r in sent_rows:
+                variant_counts[r["title"]] = variant_counts.get(r["title"], 0) + 1
+            title = "סיכום שבועי אוטומטי"
+            body = " | ".join(f"{variant_title}: {count}" for variant_title, count in variant_counts.items())
+        else:
+            title = sent_rows[0]["title"]
+            body = sent_rows[0]["body"]
+
+        url, key = _supabase_config()
+        response = await client.post(
+            f"{url}/rest/v1/notification_broadcasts",
+            params={"on_conflict": "dedup_key"},
+            headers=_headers(key, prefer="resolution=merge-duplicates,return=minimal"),
+            json={
+                "title": title,
+                "body": body,
+                "navigation": sent_rows[0].get("data"),
+                "sent_via": "scheduler",
+                "notification_type": notification_type,
+                "dedup_key": dedup_key,
+                "activity_segment": "any",
+                "platform_segment": "any",
+                "audience_size": len(sent_rows),
+                "status": "sent",
+                "target_type": "segment",
+            },
+        )
+        response.raise_for_status()
+
+
 async def process_push_queue() -> dict:
     async with httpx.AsyncClient(timeout=20.0) as client:
         rows = await _fetch_pending_queue(client)
@@ -456,6 +565,7 @@ async def process_push_queue() -> dict:
             return {"processed": 0, "sent": 0, "failed_permanent": 0, "failed_retryable": 0}
 
         sent_ids: list[str] = []
+        touched_keys: set[tuple[str, str]] = set()
         device_not_registered_ids: list[str] = []
         dead_tokens: set[str] = set()
         retryable_rows: list[dict] = []
@@ -471,6 +581,7 @@ async def process_push_queue() -> dict:
             for row, ticket in zip(chunk, tickets):
                 if ticket.get("status") == "ok":
                     sent_ids.append(row["id"])
+                    touched_keys.add((row["notification_type"], row["dedup_key"]))
                 elif (ticket.get("details") or {}).get("error") == "DeviceNotRegistered":
                     device_not_registered_ids.append(row["id"])
                     dead_tokens.add(row["expo_push_token"])
@@ -479,6 +590,7 @@ async def process_push_queue() -> dict:
 
         if sent_ids:
             await _rest_patch(client, "push_queue", {"id": f"in.({','.join(sent_ids)})"}, {"status": "sent"})
+            await _sync_scheduled_broadcasts(client, touched_keys)
 
         if device_not_registered_ids:
             await _rest_patch(

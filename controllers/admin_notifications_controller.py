@@ -4,6 +4,12 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from controllers.admin_controller import _supabase_headers, log_admin_action
+from controllers.scheduler_controller import (
+    AUTOMATION_TRIGGER_DEFAULTS,
+    AUTOMATION_TYPES,
+    MESSAGES,
+    WEEKLY_SUMMARY_DEFAULTS,
+)
 
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 EXPO_CHUNK_SIZE = 100
@@ -11,6 +17,22 @@ EXPO_CHUNK_SIZE = 100
 ACTIVITY_SEGMENTS = {"any", "active_7d", "active_30d", "inactive_30d"}
 PLATFORM_SEGMENTS = {"any", "ios", "android"}
 TARGET_MODES = {"segment", "specific_users"}
+
+AUTOMATION_UPDATABLE_COLUMNS = {
+    "enabled": "enabled",
+    "title": "title",
+    "body": "body",
+    "titleSuccess": "title_success",
+    "bodySuccess": "body_success",
+    "titleFail": "title_fail",
+    "bodyFail": "body_fail",
+    "screen": "screen",
+    "hour": "hour",
+    "dayOfWeek": "day_of_week",
+    "thresholdPercent": "threshold_percent",
+    "firstReminderDelayHours": "first_reminder_delay_hours",
+    "reminderIntervalHours": "reminder_interval_hours",
+}
 
 # תואם 1:1 ל-SCREEN_ROUTES ב-BodyBuddy-Client/src/hooks/useNotificationNavigation.ts.
 # privacy-policy ו-workout_plan לא נתמכים בכוונה - ראה הערה שם.
@@ -268,6 +290,132 @@ async def get_notification_history() -> list[dict]:
             "sentVia": row.get("sent_via") or "admin_panel",
             "targetType": row.get("target_type") or "segment",
             "recipients": [_recipient(user_id) for user_id in (row.get("recipient_user_ids") or [])],
+            "notificationType": row.get("notification_type"),
+            "dedupKey": row.get("dedup_key"),
         }
         for row in broadcasts
+    ]
+
+
+async def get_automations() -> list[dict]:
+    supabase_url = os.getenv("SUPABASE_URL")
+    headers = _supabase_headers()
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(
+            f"{supabase_url}/rest/v1/notification_automations",
+            params={"select": "*"},
+            headers=headers,
+        )
+        response.raise_for_status()
+        rows_by_type = {row["type"]: row for row in response.json()}
+
+    order = ["workout_reminder", "nutrition_reminder", "profile_incomplete", "weekly_summary"]
+    result = []
+    for automation_type in order:
+        row = rows_by_type.get(automation_type, {})
+        trigger_defaults = AUTOMATION_TRIGGER_DEFAULTS[automation_type]
+        entry: dict = {
+            "type": automation_type,
+            "enabled": row.get("enabled", True),
+            "screen": row.get("screen"),
+            "hour": row.get("hour"),
+            "dayOfWeek": row.get("day_of_week"),
+            "thresholdPercent": row.get("threshold_percent"),
+            "firstReminderDelayHours": row.get("first_reminder_delay_hours"),
+            "reminderIntervalHours": row.get("reminder_interval_hours"),
+            "updatedAt": row.get("updated_at"),
+        }
+        if automation_type == "weekly_summary":
+            entry["titleSuccess"] = row.get("title_success")
+            entry["bodySuccess"] = row.get("body_success")
+            entry["titleFail"] = row.get("title_fail")
+            entry["bodyFail"] = row.get("body_fail")
+            entry["defaults"] = {**trigger_defaults, **WEEKLY_SUMMARY_DEFAULTS}
+        else:
+            default_message = MESSAGES[automation_type]
+            entry["title"] = row.get("title")
+            entry["body"] = row.get("body")
+            entry["defaults"] = {
+                **trigger_defaults,
+                "title": default_message["title"],
+                "body": default_message["body"],
+                "screen": (default_message.get("data") or {}).get("screen"),
+            }
+        result.append(entry)
+
+    return result
+
+
+async def update_automation(automation_type: str, updates: dict, admin_id: str) -> dict:
+    supabase_url = os.getenv("SUPABASE_URL")
+    headers = {**_supabase_headers(), "Content-Type": "application/json", "Prefer": "return=representation"}
+
+    patch_body = {
+        AUTOMATION_UPDATABLE_COLUMNS[key]: value for key, value in updates.items() if key in AUTOMATION_UPDATABLE_COLUMNS
+    }
+    patch_body["updated_at"] = datetime.now(timezone.utc).isoformat()
+    patch_body["updated_by"] = admin_id
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.patch(
+            f"{supabase_url}/rest/v1/notification_automations",
+            params={"type": f"eq.{automation_type}"},
+            headers=headers,
+            json=patch_body,
+        )
+        response.raise_for_status()
+        rows = response.json()
+
+    await log_admin_action(admin_id, "update_notification_automation", automation_type, updates)
+
+    return rows[0] if rows else {}
+
+
+async def get_broadcast_recipients(dedup_key: str) -> list[dict]:
+    supabase_url = os.getenv("SUPABASE_URL")
+    headers = _supabase_headers()
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(
+            f"{supabase_url}/rest/v1/push_queue",
+            params={
+                "dedup_key": f"eq.{dedup_key}",
+                "select": "user_id,status,attempts,last_error,updated_at",
+                "order": "updated_at.desc",
+            },
+            headers=headers,
+        )
+        response.raise_for_status()
+        rows = response.json()
+
+        user_ids = {row["user_id"] for row in rows}
+        profiles_by_id: dict[str, dict] = {}
+        emails_by_id: dict[str, str] = {}
+        if user_ids:
+            profiles_response = await client.get(
+                f"{supabase_url}/rest/v1/profiles",
+                params={"select": "user_id,full_name", "user_id": f"in.({','.join(user_ids)})"},
+                headers=headers,
+            )
+            profiles_response.raise_for_status()
+            profiles_by_id = {row["user_id"]: row for row in profiles_response.json()}
+
+            auth_users = await _list_all_auth_users(client, supabase_url, headers)
+            emails_by_id = {user["id"]: user.get("email") for user in auth_users if user["id"] in user_ids}
+
+    def _label(user_id: str) -> str:
+        name = (profiles_by_id.get(user_id) or {}).get("full_name")
+        return name or emails_by_id.get(user_id) or "משתמש לא ידוע"
+
+    return [
+        {
+            "userId": row["user_id"],
+            "userName": _label(row["user_id"]),
+            "status": row["status"],
+            "attempts": row["attempts"],
+            "lastError": row.get("last_error"),
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
     ]
