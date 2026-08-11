@@ -161,20 +161,71 @@ async def get_new_user_counts() -> dict:
 
 async def get_active_user_counts() -> dict:
     supabase_url = os.getenv("SUPABASE_URL")
-    headers = _supabase_headers()
+    headers = {**_supabase_headers(), "Content-Type": "application/json"}
 
     async with httpx.AsyncClient(timeout=10.0) as client:
-        auth_users = await _fetch_all_auth_users(client, supabase_url, headers)
+        response = await client.post(
+            f"{supabase_url}/rest/v1/rpc/get_active_session_counts", headers=headers, json={}
+        )
+        response.raise_for_status()
+        rows = response.json()
+
+    row = rows[0] if rows else {"active_today": 0, "active_7d": 0, "active_30d": 0}
+    return {
+        "activeToday": row["active_today"],
+        "active7d": row["active_7d"],
+        "active30d": row["active_30d"],
+    }
+
+
+async def _fetch_recent_timestamps(
+    client: httpx.AsyncClient, supabase_url: str, headers: dict, table: str, timestamp_field: str, cutoff: datetime
+) -> list[dict]:
+    response = await client.get(
+        f"{supabase_url}/rest/v1/{table}",
+        params={
+            "select": f"user_id,{timestamp_field}",
+            timestamp_field: f"gte.{cutoff.isoformat()}",
+        },
+        headers=headers,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+async def get_engaged_user_counts() -> dict:
+    supabase_url = os.getenv("SUPABASE_URL")
+    headers = _supabase_headers()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        sessions = await _fetch_recent_timestamps(client, supabase_url, headers, "sessions", "completed_at", cutoff)
+        workouts_plans = await _fetch_recent_timestamps(
+            client, supabase_url, headers, "workouts_plans", "created_at", cutoff
+        )
+        nutrition_entries = await _fetch_recent_timestamps(
+            client, supabase_url, headers, "nutrition_entries", "created_at", cutoff
+        )
+
+    last_engaged_at: dict[str, datetime] = {}
+    for rows, timestamp_field in (
+        (sessions, "completed_at"),
+        (workouts_plans, "created_at"),
+        (nutrition_entries, "created_at"),
+    ):
+        for row in rows:
+            occurred_at = _parse_iso(row[timestamp_field])
+            if occurred_at is None:
+                continue
+            user_id = row["user_id"]
+            if user_id not in last_engaged_at or occurred_at > last_engaged_at[user_id]:
+                last_engaged_at[user_id] = occurred_at
 
     now = datetime.now(timezone.utc)
-    last_active_times = [
-        active for user in auth_users if (active := _parse_iso(user.get("last_sign_in_at")))
-    ]
-
     return {
-        "activeToday": sum(1 for active in last_active_times if now - active <= timedelta(days=1)),
-        "active7d": sum(1 for active in last_active_times if now - active <= timedelta(days=7)),
-        "active30d": sum(1 for active in last_active_times if now - active <= timedelta(days=30)),
+        "activeToday": sum(1 for t in last_engaged_at.values() if now - t <= timedelta(days=1)),
+        "active7d": sum(1 for t in last_engaged_at.values() if now - t <= timedelta(days=7)),
+        "active30d": sum(1 for t in last_engaged_at.values() if now - t <= timedelta(days=30)),
     }
 
 

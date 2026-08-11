@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Request, Depends, Body, Form, File
 from controllers.admin_controller import (
     delete_user,
     get_active_user_counts,
+    get_engaged_user_counts,
     get_new_user_counts,
     get_user_detail,
     list_users,
@@ -217,6 +218,19 @@ async def get_active_user_counts_route(request: Request, user_id: str = Depends(
     except Exception as e:
         print("admin active user counts error:", e)
         raise HTTPException(status_code=500, detail="Failed to load active user counts")
+
+
+@routerAdmin.get("/dashboard/engaged-user-counts")
+@limiter.limit("60/minute")
+async def get_engaged_user_counts_route(request: Request, user_id: str = Depends(require_admin)):
+    try:
+        return await get_engaged_user_counts()
+    except RuntimeError as e:
+        print("admin engaged user counts config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load engaged user counts")
+    except Exception as e:
+        print("admin engaged user counts error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load engaged user counts")
 
 
 @routerAdmin.delete("/users/{target_user_id}")
