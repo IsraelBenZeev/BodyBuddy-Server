@@ -59,6 +59,7 @@ def _to_exercise(row: dict) -> dict:
         "imageUrls": row.get("imageUrls") or [],
         "videoUrl": row.get("videoUrl"),
         "createdAt": row.get("created_at"),
+        "inputFields": row.get("input_fields") or [],
     }
 
 
@@ -161,6 +162,7 @@ async def create_exercise(
     instructions: list[str],
     instructions_he: list[str],
     home_friendly: bool,
+    input_fields: list[dict],
     images: list[tuple[bytes, str]],
     video_data: bytes | None,
     video_content_type: str | None,
@@ -198,6 +200,7 @@ async def create_exercise(
             "imageUrls": image_urls,
             "videoUrl": video_url,
             "status": "active",
+            "input_fields": input_fields,
         }
 
         next_sort_order_response = await client.get(
@@ -242,6 +245,7 @@ async def update_exercise(
     instructions: list[str],
     instructions_he: list[str],
     home_friendly: bool,
+    input_fields: list[dict],
     keep_image_urls: list[str] | None,
     new_images: list[tuple[bytes, str]],
     video_data: bytes | None,
@@ -270,6 +274,7 @@ async def update_exercise(
         "instructions": instructions,
         "instructions_he": instructions_he,
         "homeFriendly": home_friendly,
+        "input_fields": input_fields,
     }
 
     if keep_image_urls is not None or new_images:

@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Request, Depends, Body, Form, File, Query, UploadFile
@@ -73,6 +74,16 @@ def _validate_exercise_fields(name: str, name_he: str, body_parts: list[str]) ->
         raise HTTPException(status_code=400, detail="bodyParts must contain at least one value")
     if any(part not in VALID_BODY_PARTS for part in body_parts):
         raise HTTPException(status_code=400, detail="Invalid bodyParts value")
+
+
+def _parse_input_fields(raw: str) -> list[dict]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="inputFields must be valid JSON")
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=400, detail="inputFields must be a JSON array")
+    return parsed
 
 
 async def _read_validated_image(image: UploadFile) -> tuple[bytes, str]:
@@ -317,11 +328,13 @@ async def create_exercise_route(
     instructions: list[str] = Form([]),
     instructionsHe: list[str] = Form([]),
     homeFriendly: bool = Form(False),
+    inputFields: str = Form("[]"),
     image: list[UploadFile] = File(...),
     video: UploadFile | None = File(None),
     user_id: str = Depends(require_admin),
 ):
     _validate_exercise_fields(name, nameHe, bodyParts)
+    parsed_input_fields = _parse_input_fields(inputFields)
     if not image:
         raise HTTPException(status_code=400, detail="At least one image is required")
     images = await _read_validated_images(image)
@@ -345,6 +358,7 @@ async def create_exercise_route(
             instructions=instructions,
             instructions_he=instructionsHe,
             home_friendly=homeFriendly,
+            input_fields=parsed_input_fields,
             images=images,
             video_data=video_data,
             video_content_type=video_content_type,
@@ -377,6 +391,7 @@ async def update_exercise_route(
     instructions: list[str] = Form([]),
     instructionsHe: list[str] = Form([]),
     homeFriendly: bool = Form(False),
+    inputFields: str = Form("[]"),
     imageUrls: list[str] = Form([]),
     image: list[UploadFile] = File([]),
     video: UploadFile | None = File(None),
@@ -384,6 +399,7 @@ async def update_exercise_route(
     user_id: str = Depends(require_admin),
 ):
     _validate_exercise_fields(name, nameHe, bodyParts)
+    parsed_input_fields = _parse_input_fields(inputFields)
     new_images = await _read_validated_images(image) if image else []
     if not imageUrls and not new_images:
         raise HTTPException(status_code=400, detail="At least one image is required")
@@ -408,6 +424,7 @@ async def update_exercise_route(
             instructions=instructions,
             instructions_he=instructionsHe,
             home_friendly=homeFriendly,
+            input_fields=parsed_input_fields,
             keep_image_urls=imageUrls,
             new_images=new_images,
             video_data=video_data,
