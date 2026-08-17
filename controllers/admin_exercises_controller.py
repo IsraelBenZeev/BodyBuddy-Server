@@ -88,7 +88,7 @@ async def list_exercises(
     search: str,
     page: int,
     *,
-    body_part: str | None = None,
+    body_parts: list[str] | None = None,
     status: str | None = None,
     sort_by: str = "createdAt",
     sort_order: str = "desc",
@@ -109,8 +109,8 @@ async def list_exercises(
     if query:
         escaped_query = query.replace('"', '""')
         params["or"] = f'(name.ilike."*{escaped_query}*",name_he.ilike."*{escaped_query}*")'
-    if body_part:
-        params["bodyParts"] = f"cs.{{{body_part}}}"
+    if body_parts:
+        params["bodyParts"] = f"ov.{{{','.join(body_parts)}}}"
     if status:
         params["status"] = f"eq.{status}"
 
@@ -126,6 +126,32 @@ async def list_exercises(
         "pageSize": EXERCISES_PAGE_SIZE,
         "total": total,
     }
+
+
+async def list_exercise_body_parts() -> list[dict]:
+    supabase_url = os.getenv("SUPABASE_URL")
+    headers = _supabase_headers()
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(
+            f"{supabase_url}/rest/v1/{EXERCISES_TABLE}",
+            params={"select": "bodyParts,bodyParts_he", "limit": "10000"},
+            headers=headers,
+        )
+        response.raise_for_status()
+        rows = response.json()
+
+    labels: dict[str, str] = {}
+    for row in rows:
+        parts = row.get("bodyParts") or []
+        parts_he = row.get("bodyParts_he") or []
+        for index, part in enumerate(parts):
+            if not part or part in labels:
+                continue
+            label = parts_he[index] if index < len(parts_he) and parts_he[index] else part
+            labels[part] = label
+
+    return [{"value": value, "label": labels[value]} for value in sorted(labels)]
 
 
 async def get_exercise(exercise_id: str) -> dict:

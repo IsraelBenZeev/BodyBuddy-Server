@@ -17,6 +17,7 @@ from controllers.admin_exercises_controller import (
     create_exercise,
     delete_exercise,
     get_exercise,
+    list_exercise_body_parts,
     list_exercises,
     toggle_exercise_freeze,
     update_exercise,
@@ -270,14 +271,12 @@ async def list_exercises_route(
     request: Request,
     page: int,
     search: str = "",
-    bodyPart: str | None = None,
+    bodyPart: list[str] = Query(default=[]),
     status: str | None = None,
     sortBy: str = "createdAt",
     sortOrder: str = "desc",
     user_id: str = Depends(require_admin),
 ):
-    if bodyPart is not None and bodyPart not in VALID_BODY_PARTS:
-        raise HTTPException(status_code=400, detail="Invalid bodyPart")
     if status is not None and status not in EXERCISE_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status")
     if sortBy not in EXERCISE_SORT_FIELDS:
@@ -286,13 +285,26 @@ async def list_exercises_route(
         raise HTTPException(status_code=400, detail="Invalid sortOrder")
 
     try:
-        return await list_exercises(search, page, body_part=bodyPart, status=status, sort_by=sortBy, sort_order=sortOrder)
+        return await list_exercises(search, page, body_parts=bodyPart, status=status, sort_by=sortBy, sort_order=sortOrder)
     except RuntimeError as e:
         print("admin list exercises config error:", e)
         raise HTTPException(status_code=500, detail="Failed to load exercises")
     except Exception as e:
         print("admin list exercises error:", e)
         raise HTTPException(status_code=500, detail="Failed to load exercises")
+
+
+@routerAdmin.get("/exercises/body-parts")
+@limiter.limit("60/minute")
+async def list_exercise_body_parts_route(request: Request, user_id: str = Depends(require_admin)):
+    try:
+        return await list_exercise_body_parts()
+    except RuntimeError as e:
+        print("admin list exercise body parts config error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load body parts")
+    except Exception as e:
+        print("admin list exercise body parts error:", e)
+        raise HTTPException(status_code=500, detail="Failed to load body parts")
 
 
 @routerAdmin.get("/exercises/{exercise_id}")
