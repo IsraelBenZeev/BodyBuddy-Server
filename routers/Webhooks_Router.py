@@ -4,9 +4,26 @@ import os
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from controllers.reports_controller import send_exercise_report_email, update_exercise_report_status
+from controllers.reports_controller import (
+    send_exercise_report_email,
+    send_new_user_email,
+    update_exercise_report_status,
+)
 
 routerWebhooks = APIRouter()
+
+
+class NewUserRecord(BaseModel):
+    id: str
+    email: str | None = None
+    full_name: str | None = None
+    created_at: str | None = None
+
+
+class NewUserWebhookPayload(BaseModel):
+    type: str
+    table: str
+    record: NewUserRecord
 
 
 class ExerciseReportRecord(BaseModel):
@@ -61,5 +78,31 @@ async def exercise_report_webhook(
         await update_exercise_report_status(record.id, "reviewed")
     except Exception as e:
         print("exercise report webhook status update error:", e)
+
+    return {"status": "ok"}
+
+
+@routerWebhooks.post("/new-user")
+async def new_user_webhook(
+    payload: NewUserWebhookPayload,
+    x_webhook_secret: str | None = Header(default=None, alias="x-webhook-secret"),
+):
+    _verify_webhook_secret(x_webhook_secret)
+
+    if payload.table != "users" or payload.type != "INSERT":
+        return {"status": "ignored"}
+
+    record = payload.record
+
+    try:
+        await send_new_user_email(
+            user_id=record.id,
+            email=record.email,
+            full_name=record.full_name,
+            created_at=record.created_at,
+        )
+    except Exception as e:
+        print("new user webhook email error:", e)
+        raise HTTPException(status_code=500, detail="Failed to send new user email")
 
     return {"status": "ok"}

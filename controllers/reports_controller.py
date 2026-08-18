@@ -423,6 +423,115 @@ async def send_exercise_added_email(exercise: dict, admin_id: str) -> None:
         server.send_message(message)
 
 
+def _build_new_user_email_html(
+    full_name_display: str,
+    email_display: str,
+    created_at_display: str,
+    user_id_display: str,
+) -> str:
+    return f"""\
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<body style="margin:0;padding:24px;background:{COLOR_GRAY_50};font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="560" cellpadding="0" cellspacing="0"
+               style="max-width:560px;width:100%;background:#ffffff;border:1px solid {COLOR_GRAY_200};border-radius:12px;overflow:hidden;">
+          <tr>
+            <td align="center" style="background:{COLOR_GRAY_900};padding:28px 24px;">
+              <img src="cid:logo" alt="BodyBuddy" width="72" style="display:block;height:auto;" />
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px 24px 8px 24px;" dir="rtl">
+              <span style="display:inline-block;background:{COLOR_LIME_LIGHT};color:{COLOR_GRAY_900};font-size:12px;font-weight:bold;padding:4px 10px;border-radius:999px;">
+                משתמש חדש
+              </span>
+              <h1 style="margin:12px 0 0 0;font-size:20px;color:{COLOR_GRAY_900};text-align:right;">
+                משתמש חדש נרשם לאפליקציה
+              </h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 24px 24px 24px;" dir="rtl">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;width:120px;">שם</td>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_900};font-size:14px;text-align:right;">{full_name_display}</td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;">אימייל</td>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_900};font-size:14px;text-align:right;">{email_display}</td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_500};font-size:13px;text-align:right;">תאריך הרשמה</td>
+                  <td style="padding:10px 0;border-bottom:1px solid {COLOR_GRAY_200};color:{COLOR_GRAY_900};font-size:14px;text-align:right;">{created_at_display}</td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 0;color:{COLOR_GRAY_500};font-size:13px;text-align:right;">מזהה משתמש</td>
+                  <td style="padding:10px 0;color:{COLOR_GRAY_500};font-size:12px;font-family:monospace;text-align:right;">{user_id_display}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:16px 24px;background:{COLOR_GRAY_50};border-top:1px solid {COLOR_GRAY_200};">
+              <span style="color:{COLOR_GRAY_500};font-size:12px;">נשלח אוטומטית ממערכת BodyBuddy</span>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+
+async def send_new_user_email(
+    user_id: str,
+    email: str | None,
+    full_name: str | None,
+    created_at: str | None,
+) -> None:
+    gmail_address = os.getenv("GMAIL_ADDRESS")
+    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
+    recipient = os.getenv("REPORT_RECIPIENT_EMAIL", "bodybuddysupport@gmail.com")
+
+    if not gmail_address or not gmail_app_password:
+        raise RuntimeError("GMAIL_ADDRESS/GMAIL_APP_PASSWORD not configured")
+
+    full_name_display = _escape(full_name)
+    email_display = _escape(email)
+    created_at_display = _format_created_at(created_at)
+    user_id_display = _escape(user_id, max_length=100)
+
+    message = MIMEMultipart("related")
+    message["Subject"] = f'משתמש חדש נרשם: "{_sanitize(email or full_name)}"'
+    message["From"] = gmail_address
+    message["To"] = recipient
+
+    html_body = _build_new_user_email_html(
+        full_name_display,
+        email_display,
+        created_at_display,
+        user_id_display,
+    )
+    message.attach(MIMEText(html_body, "html", "utf-8"))
+
+    if LOGO_PATH.exists():
+        with open(LOGO_PATH, "rb") as logo_file:
+            logo_image = MIMEImage(logo_file.read())
+            logo_image.add_header("Content-ID", "<logo>")
+            logo_image.add_header("Content-Disposition", "inline", filename="logo.png")
+            message.attach(logo_image)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(gmail_address, gmail_app_password)
+        server.send_message(message)
+
+
 async def update_exercise_report_status(report_id: str, status: str) -> None:
     supabase_url = os.getenv("SUPABASE_URL")
     service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
