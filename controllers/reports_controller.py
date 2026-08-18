@@ -257,6 +257,41 @@ async def send_exercise_report_email(
         server.send_message(message)
 
 
+async def insert_exercise_report(
+    user_id: str,
+    search_query: str,
+    suggested_name: str | None,
+    note: str | None,
+    example_url: str | None,
+) -> dict:
+    supabase_url = os.getenv("SUPABASE_URL")
+    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not supabase_url or not service_role_key:
+        raise RuntimeError("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not configured")
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(
+            f"{supabase_url}/rest/v1/exercise_reports",
+            headers={
+                "apikey": service_role_key,
+                "Authorization": f"Bearer {service_role_key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=representation",
+            },
+            json={
+                "user_id": user_id,
+                "search_query": search_query,
+                "suggested_name": suggested_name,
+                "note": note,
+                "example_url": example_url,
+            },
+        )
+        response.raise_for_status()
+        rows = response.json()
+        return rows[0]
+
+
 def _format_body_parts(body_parts: list[str]) -> str:
     return ", ".join(BODY_PART_LABELS_HE.get(part, part) for part in body_parts) or "-"
 
